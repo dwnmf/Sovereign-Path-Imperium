@@ -1,8 +1,10 @@
+import { CheckCircle, LockKey, WarningCircle } from '@phosphor-icons/react'
 import { List } from 'react-window'
 import type { RowComponentProps } from 'react-window'
 import type { LinkEntry } from '../types'
 
-const ROW_HEIGHT = 34
+const ROW_HEIGHT = 42
+const ICON_SIZE = 14
 const FixedSizeList = List
 
 interface LinkListProps {
@@ -10,6 +12,7 @@ interface LinkListProps {
   activePath: string | null
   width: number
   height: number
+  isScanning: boolean
   onSelect: (path: string) => void
 }
 
@@ -17,6 +20,34 @@ interface RowProps {
   entries: LinkEntry[]
   activePath: string | null
   onSelect: (path: string) => void
+}
+
+function statusBadgeText(entry: LinkEntry): string {
+  if (entry.status === 'AccessDenied') {
+    return 'Denied'
+  }
+
+  if (entry.status === 'Broken') {
+    return 'Broken'
+  }
+
+  if (entry.link_type === 'Junction') {
+    return 'Junction'
+  }
+
+  return 'Ready'
+}
+
+function StatusIcon({ status }: { status: LinkEntry['status'] }) {
+  if (status === 'AccessDenied') {
+    return <LockKey size={ICON_SIZE} weight="duotone" />
+  }
+
+  if (status === 'Broken') {
+    return <WarningCircle size={ICON_SIZE} weight="duotone" />
+  }
+
+  return <CheckCircle size={ICON_SIZE} weight="duotone" />
 }
 
 function splitPath(path: string): { dir: string; name: string } {
@@ -47,15 +78,6 @@ function Row({
   const active = activePath === entry.path
   const pathParts = splitPath(entry.path)
 
-  const badge =
-    entry.status === 'AccessDenied'
-      ? '🔒'
-      : entry.link_type === 'Junction'
-        ? 'JNC'
-        : entry.status === 'Broken'
-          ? '!!!'
-          : 'OK'
-
   return (
     <div style={style} className="linkListRowWrap">
       <button
@@ -79,16 +101,36 @@ function Row({
           className={`statusBadge statusBadge--${entry.status.toLowerCase()}`}
           aria-label={entry.status}
         >
-          {badge}
+          <StatusIcon status={entry.status} />
+          {statusBadgeText(entry)}
         </span>
       </button>
     </div>
   )
 }
 
-export function LinkList({ entries, activePath, width, height, onSelect }: LinkListProps) {
+export function LinkList({ entries, activePath, width, height, isScanning, onSelect }: LinkListProps) {
+  if (entries.length === 0 && isScanning) {
+    return (
+      <div className="listSkeleton" role="status" aria-live="polite">
+        {Array.from({ length: 9 }, (_, index) => (
+          <div className="listSkeletonRow" key={`skeleton-${index}`}>
+            <span className="listSkeletonBlock listSkeletonBlock--path" />
+            <span className="listSkeletonBlock listSkeletonBlock--target" />
+            <span className="listSkeletonPill" />
+          </div>
+        ))}
+      </div>
+    )
+  }
+
   if (entries.length === 0) {
-    return <div className="emptyState">No links found for current filters.</div>
+    return (
+      <div className="emptyState">
+        <p className="emptyStateTitle">No links match these filters</p>
+        <p className="emptyStateHint">Reset search or switch status/type to repopulate this view.</p>
+      </div>
+    )
   }
 
   return (

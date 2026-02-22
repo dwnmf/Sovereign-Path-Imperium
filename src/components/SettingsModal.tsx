@@ -36,8 +36,9 @@ export function SettingsModal({
         <section>
           <h4>Scan</h4>
 
-          <label>
-            Default volume
+          <label className="formField">
+            <span className="fieldLabel">Default volume</span>
+            <span className="fieldHint">Volume used when opening symview.</span>
             <select
               value={config.scan.default_volume}
               onChange={(event) =>

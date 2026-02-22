@@ -1,3 +1,5 @@
+import { ShieldWarning } from '@phosphor-icons/react'
+
 interface ElevationBannerProps {
   visible: boolean
   onRestartAsAdmin: () => void
@@ -10,6 +12,9 @@ export function ElevationBanner({ visible, onRestartAsAdmin }: ElevationBannerPr
 
   return (
     <div className="elevationBanner">
+      <span className="elevationBannerIcon" aria-hidden="true">
+        <ShieldWarning size={16} weight="duotone" />
+      </span>
       <span>symview is running without administrator privileges.</span>
       <span>USN Journal scan unavailable, using slower fallback. Some symlinks may not be visible.</span>
       <button className="button button--warn" onClick={onRestartAsAdmin} type="button">

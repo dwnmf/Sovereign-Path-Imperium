@@ -71,6 +71,7 @@ function App() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('All')
 
   const [details, setDetails] = useState<LinkDetails | null>(null)
+  const [detailsLoading, setDetailsLoading] = useState(false)
   const [detailsError, setDetailsError] = useState('')
   const [showCreate, setShowCreate] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
@@ -93,22 +94,29 @@ function App() {
 
   useEffect(() => {
     if (!links.selectedEntry) {
+      setDetailsLoading(false)
+      setDetailsError('')
+      setDetails(null)
       return
     }
 
     let cancelled = false
+    setDetailsLoading(true)
+    setDetailsError('')
 
     apiGetLinkDetails(links.selectedEntry.path)
       .then((payload) => {
         if (!cancelled) {
           setDetails(payload)
           setDetailsError('')
+          setDetailsLoading(false)
         }
       })
       .catch((error) => {
         if (!cancelled) {
           setDetails(null)
           setDetailsError(error instanceof Error ? error.message : 'Unable to load details')
+          setDetailsLoading(false)
         }
       })
 
@@ -173,7 +181,15 @@ function App() {
 
       <main className="panelShell">
         <section className="leftPanel">
-          <div className="panelHeader">Links ({links.filtered.length.toLocaleString()})</div>
+          <div className="panelHeader">
+            <div>
+              <div className="panelTitle">Link Registry</div>
+              <div className="panelMeta">
+                {scan.currentVolume} · {typeFilter} · {statusFilter}
+              </div>
+            </div>
+            <div className="panelHeaderValue">{links.filtered.length.toLocaleString()}</div>
+          </div>
           <div className="listViewport" ref={listRef}>
             {listSize.height > 0 && listSize.width > 0 ? (
               <LinkList
@@ -182,16 +198,30 @@ function App() {
                 onSelect={links.setSelectedPath}
                 width={listSize.width}
                 height={listSize.height}
+                isScanning={scan.isScanning}
               />
             ) : null}
           </div>
         </section>
 
         <section className="rightPanel">
-          <div className="panelHeader">Details</div>
+          <div className="panelHeader">
+            <div>
+              <div className="panelTitle">Inspector</div>
+              <div className="panelMeta">
+                {links.selectedEntry
+                  ? `${links.selectedEntry.link_type} · ${links.selectedEntry.status}`
+                  : 'Select a row to inspect path and metadata'}
+              </div>
+            </div>
+            <div className="panelHeaderValue panelHeaderValue--subtle">
+              {links.selectedEntry ? links.selectedEntry.path.split('\\').pop() : 'Idle'}
+            </div>
+          </div>
           {detailsError ? <div className="inlineError inlineError--margined">{detailsError}</div> : null}
           <DetailPanel
             details={links.selectedEntry ? details : null}
+            loading={Boolean(links.selectedEntry) && detailsLoading}
             canUndo={Boolean(history.items[0] && history.items[0].action_type !== 'Undo')}
             onOpenTarget={(target) => {
               void apiOpenTarget(target)
@@ -222,6 +252,9 @@ function App() {
         working={links.stats.working}
         broken={links.stats.broken}
         junctions={links.stats.junctions}
+        total={scan.entries.length}
+        visible={links.filtered.length}
+        scanning={scan.isScanning}
         volume={scan.currentVolume}
         method={scan.scanMethod}
       />

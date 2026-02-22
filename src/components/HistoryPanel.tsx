@@ -1,3 +1,4 @@
+import { ArrowLeft, ArrowRight, ArrowsCounterClockwise, ClockCounterClockwise } from '@phosphor-icons/react'
 import type { ActionRecord } from '../types'
 
 interface HistoryPanelProps {
@@ -40,32 +41,48 @@ export function HistoryPanel({
   return (
     <aside className={`historyPanel ${open ? 'historyPanel--open' : ''}`}>
       <div className="historyHeader">
-        <h3>History</h3>
+        <h3>
+          <ClockCounterClockwise size={16} weight="duotone" />
+          History
+        </h3>
         <button className="button" onClick={onClose} type="button">
           Close
         </button>
       </div>
 
       <button
-        className="button"
+        className="button button--icon"
         disabled={items[0]?.action_type === 'Undo'}
         title={items[0]?.action_type === 'Undo' ? 'Nothing to undo' : ''}
         onClick={onUndo}
         type="button"
       >
+        <ArrowsCounterClockwise size={16} weight="duotone" />
         Undo last action
       </button>
 
       {error ? <div className="inlineError">{error}</div> : null}
       {loading ? <div className="emptyState">Loading history...</div> : null}
+      {!loading && items.length === 0 ? (
+        <div className="emptyState">
+          <p className="emptyStateTitle">No history yet</p>
+          <p className="emptyStateHint">Created, retargeted and deleted links will appear here.</p>
+        </div>
+      ) : null}
 
       <div className="historyList">
         {items.map((item) => (
           <div className="historyItem" key={item.id}>
-            <span>{formatTime(item.timestamp)}</span>
-            <span>{item.action_type}</span>
-            <span>{item.link_path}</span>
-            <span>{item.target_new ?? item.target_old ?? ''}</span>
+            <div className="historyItemTop">
+              <span>{formatTime(item.timestamp)}</span>
+              <span className={`historyOutcome ${item.success ? 'historyOutcome--ok' : 'historyOutcome--failed'}`}>
+                {item.success ? 'Applied' : 'Failed'}
+              </span>
+            </div>
+            <span className="historyAction">{item.action_type}</span>
+            <span className="historyPath">{item.link_path}</span>
+            <span className="historyTarget">{item.target_new ?? item.target_old ?? ''}</span>
+            {item.error_msg ? <span className="historyErrorText">{item.error_msg}</span> : null}
           </div>
         ))}
       </div>
@@ -77,14 +94,16 @@ export function HistoryPanel({
           onClick={() => onPage(Math.max(0, offset - pageSize))}
           type="button"
         >
+          <ArrowLeft size={14} weight="bold" />
           Prev
         </button>
         <button
-          className="button"
+          className="button button--icon"
           disabled={items.length < pageSize}
           onClick={() => onPage(offset + pageSize)}
           type="button"
         >
+          <ArrowRight size={14} weight="bold" />
           Next
         </button>
       </div>

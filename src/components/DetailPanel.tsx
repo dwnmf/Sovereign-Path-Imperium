@@ -1,14 +1,18 @@
+import { ArrowSquareOut, ArrowsCounterClockwise, PencilSimpleLine, Trash } from '@phosphor-icons/react'
 import { useMemo, useState } from 'react'
 import type { LinkDetails } from '../types'
 
 interface DetailPanelProps {
   details: LinkDetails | null
+  loading: boolean
   canUndo: boolean
   onOpenTarget: (target: string) => void
   onDelete: (path: string) => void
   onRetarget: (path: string, target: string) => Promise<void>
   onUndo: () => Promise<void>
 }
+
+const ICON_SIZE = 16
 
 function formatDate(value: string): string {
   if (!value) {
@@ -55,6 +59,7 @@ function diffSegments(a: string, b: string): { shared: string; tailA: string; ta
 
 export function DetailPanel({
   details,
+  loading,
   canUndo,
   onOpenTarget,
   onDelete,
@@ -74,8 +79,37 @@ export function DetailPanel({
     return diffSegments(details.target_stored, details.target_real)
   }, [details])
 
+  if (loading) {
+    return (
+      <div className="detailPanel detailPanel--loading" role="status" aria-live="polite">
+        <div className="detailSection detailSection--skeleton">
+          <div className="detailSkeletonLine detailSkeletonLine--wide" />
+          <div className="detailSkeletonLine" />
+          <div className="detailSkeletonLine detailSkeletonLine--wide" />
+          <div className="detailSkeletonLine" />
+        </div>
+        <div className="detailSection detailSection--skeleton">
+          <div className="detailSkeletonLine" />
+          <div className="detailSkeletonLine detailSkeletonLine--wide" />
+          <div className="detailSkeletonLine" />
+          <div className="detailSkeletonLine detailSkeletonLine--wide" />
+        </div>
+        <div className="detailSkeletonActions">
+          <span className="detailSkeletonButton" />
+          <span className="detailSkeletonButton" />
+          <span className="detailSkeletonButton" />
+        </div>
+      </div>
+    )
+  }
+
   if (!details) {
-    return <div className="emptyState">Select a link to load details.</div>
+    return (
+      <div className="emptyState">
+        <p className="emptyStateTitle">Inspector is waiting</p>
+        <p className="emptyStateHint">Choose any row from the registry to see target and metadata.</p>
+      </div>
+    )
   }
 
   const sameTarget = details.target_stored === details.target_real
@@ -198,24 +232,28 @@ export function DetailPanel({
       {error ? <div className="inlineError">{error}</div> : null}
 
       <div className="detailActions">
-        <button className="button" onClick={() => onOpenTarget(details.target_real)} type="button">
+        <button className="button button--icon" onClick={() => onOpenTarget(details.target_real)} type="button">
+          <ArrowSquareOut size={ICON_SIZE} weight="duotone" />
           Open target
         </button>
         <button
-          className="button"
+          className="button button--icon"
           onClick={() => {
             setRetargetValue(details.target_stored)
             setEditMode(true)
           }}
           type="button"
         >
+          <PencilSimpleLine size={ICON_SIZE} weight="duotone" />
           Retarget
         </button>
-        <button className="button button--danger" onClick={() => onDelete(details.path)} type="button">
+        <button className="button button--danger button--icon" onClick={() => onDelete(details.path)} type="button">
+          <Trash size={ICON_SIZE} weight="duotone" />
           Delete
         </button>
         {canUndo ? (
-          <button className="button" onClick={() => void onUndo()} type="button">
+          <button className="button button--icon" onClick={() => void onUndo()} type="button">
+            <ArrowsCounterClockwise size={ICON_SIZE} weight="duotone" />
             Undo
           </button>
         ) : null}

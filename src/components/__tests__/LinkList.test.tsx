@@ -24,6 +24,7 @@ describe('LinkList', () => {
         onSelect={() => undefined}
         width={1200}
         height={500}
+        isScanning={false}
       />,
     )
 

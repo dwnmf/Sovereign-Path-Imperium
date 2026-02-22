@@ -59,8 +59,9 @@ export function CreateModal({ open, existingPaths, onClose, onSubmit }: CreateMo
       <div className="modalCard" onClick={(event) => event.stopPropagation()}>
         <h3>Create Link</h3>
 
-        <label>
-          Link path
+        <label className="formField">
+          <span className="fieldLabel">Link path</span>
+          <span className="fieldHint">Absolute path where the link will be created.</span>
           <div className="inputWithButton">
             <input value={linkPath} onChange={(event) => setLinkPath(event.target.value)} />
             <button
@@ -78,8 +79,9 @@ export function CreateModal({ open, existingPaths, onClose, onSubmit }: CreateMo
           </div>
         </label>
 
-        <label>
-          Target path
+        <label className="formField">
+          <span className="fieldLabel">Target path</span>
+          <span className="fieldHint">Resolved destination for the link pointer.</span>
           <div className="inputWithButton">
             <input value={targetPath} onChange={(event) => setTargetPath(event.target.value)} />
             <button
