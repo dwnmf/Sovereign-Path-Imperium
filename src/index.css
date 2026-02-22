@@ -1,14 +1,11 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap');
+
 :root {
-  font-family: 'IBM Plex Sans', 'Segoe UI', Tahoma, sans-serif;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  color: #dce5f4;
-}
-
-* {
-  box-sizing: border-box;
 }
 
 html,
@@ -21,8 +18,5 @@ body,
 }
 
 body {
-  background:
-    radial-gradient(90% 120% at 8% 4%, rgba(56, 103, 168, 0.22) 0%, rgba(16, 29, 47, 0) 58%),
-    radial-gradient(70% 110% at 92% 100%, rgba(36, 86, 135, 0.25) 0%, rgba(16, 29, 47, 0) 60%),
-    #0f1724;
+  background: #0d0f14;
 }

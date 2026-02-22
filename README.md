@@ -1,73 +1,64 @@
-# React + TypeScript + Vite
+# symview
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Desktop utility for Windows that scans, displays, creates and deletes NTFS filesystem links:
 
-Currently, two official plugins are available:
+- Symbolic links
+- Junctions
+- Hardlinks
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## Stack
 
-## React Compiler
+- Tauri 2.0 (Rust backend)
+- React 19 + TypeScript frontend
+- Vite
+- rusqlite (`bundled`)
+- react-window virtualization
+- Raw CSS (CSS variables)
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Prerequisites
 
-## Expanding the ESLint configuration
+- Windows 10/11 x64
+- Node.js 20+
+- pnpm
+- Rust stable toolchain (`rustup` + `cargo`)
+- Visual Studio Build Tools (Desktop development with C++)
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+## Development
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+pnpm install
+pnpm tauri dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Build
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+```bash
+pnpm install
+pnpm tauri build
+```
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+Target bundle is NSIS installer.
+
+## Notes
+
+- Symlink creation without admin requires Windows Developer Mode.
+- USN Journal scan path requires elevated privileges for full speed/visibility.
+- Without elevation, scan falls back to slower walkdir traversal.
+
+## Project layout
+
+```text
+symview/
+  src-tauri/
+    src/
+      main.rs
+      commands/
+      db/
+      config.rs
+      elevation.rs
+      types.rs
+  src/
+    components/
+    hooks/
+    types.ts
 ```
