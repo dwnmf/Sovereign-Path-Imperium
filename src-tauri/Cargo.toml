@@ -20,6 +20,13 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 toml = "0.8"
 walkdir = "2"
 winreg = "0.52"
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+  "Win32_System_Ioctl",
+] }
 
 [features]
 default = ["custom-protocol"]

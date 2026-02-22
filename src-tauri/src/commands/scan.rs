@@ -1,13 +1,98 @@
+use std::collections::{HashMap, HashSet};
+use std::ffi::c_void;
 use std::fs;
+use std::mem::size_of;
+use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use serde::Deserialize;
 use tauri::{AppHandle, Emitter};
 use walkdir::WalkDir;
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE, ERROR_HANDLE_EOF};
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+};
+use windows_sys::Win32::System::IO::DeviceIoControl;
+use windows_sys::Win32::System::Ioctl::{FSCTL_ENUM_USN_DATA, FSCTL_GET_REPARSE_POINT, FSCTL_QUERY_USN_JOURNAL};
 
 use crate::config::load_config;
 use crate::types::{LinkEntry, LinkStatus, LinkType, ScanProgress};
+
+const GENERIC_READ_ACCESS: u32 = 0x8000_0000;
+const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA0000003;
+const IO_REPARSE_TAG_SYMLINK: u32 = 0xA000000C;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct MftEnumDataV0 {
+    start_file_reference_number: u64,
+    low_usn: i64,
+    high_usn: i64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct UsnJournalDataV0 {
+    usn_journal_id: u64,
+    first_usn: i64,
+    next_usn: i64,
+    lowest_valid_usn: i64,
+    max_usn: i64,
+    maximum_size: u64,
+    allocation_delta: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UsnRecordV2Header {
+    record_length: u32,
+    major_version: u16,
+    minor_version: u16,
+    file_reference_number: u64,
+    parent_file_reference_number: u64,
+    usn: i64,
+    timestamp: i64,
+    reason: u32,
+    source_info: u32,
+    security_id: u32,
+    file_attributes: u32,
+    file_name_length: u16,
+    file_name_offset: u16,
+}
+
+#[derive(Clone)]
+struct FrnNode {
+    parent_frn: u64,
+    name: String,
+    file_attributes: u32,
+}
+
+struct OwnedHandle(HANDLE);
+
+impl OwnedHandle {
+    fn is_valid(&self) -> bool {
+        self.0 != std::ptr::null_mut() && self.0 != INVALID_HANDLE_VALUE
+    }
+}
+
+impl Drop for OwnedHandle {
+    fn drop(&mut self) {
+        if self.is_valid() {
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+fn to_wide_null(value: &str) -> Vec<u16> {
+    std::ffi::OsStr::new(value)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
 
 fn normalize_drive(drive: &str) -> String {
     let trimmed = drive.trim();
@@ -64,7 +149,10 @@ fn find_hardlink_target(path: &Path) -> String {
                 return path_str;
             }
 
-            if let Some(candidate) = lines.iter().find(|item| item.to_lowercase() != path_str.to_lowercase()) {
+            if let Some(candidate) = lines
+                .iter()
+                .find(|item| item.to_lowercase() != path_str.to_lowercase())
+            {
                 return (*candidate).to_string();
             }
 
@@ -74,27 +162,421 @@ fn find_hardlink_target(path: &Path) -> String {
     }
 }
 
-fn scan_with_walkdir(drive: &str, app: &AppHandle) -> Result<Vec<LinkEntry>, String> {
-    let config = load_config()?;
-    let root = normalize_drive(drive);
-    let root_path = PathBuf::from(&root);
+fn has_multiple_hardlinks(path: &Path) -> bool {
+    let path_str = path.to_string_lossy().to_string();
+    let output = Command::new("fsutil")
+        .args(["hardlink", "list", &path_str])
+        .output();
 
-    if !root_path.exists() {
-        return Err(format!("Volume path does not exist: {root}"));
+    match output {
+        Ok(value) if value.status.success() => String::from_utf8_lossy(&value.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .count()
+            > 1,
+        _ => false,
+    }
+}
+
+fn open_file_handle(path: &str, open_reparse_point: bool) -> Result<OwnedHandle, String> {
+    let wide = to_wide_null(path);
+    let mut flags = FILE_FLAG_BACKUP_SEMANTICS;
+
+    if open_reparse_point {
+        flags |= FILE_FLAG_OPEN_REPARSE_POINT;
     }
 
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_READ_ACCESS,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            flags,
+            std::ptr::null_mut(),
+        )
+    };
+
+    let owned = OwnedHandle(handle);
+
+    if !owned.is_valid() {
+        return Err(format!("CreateFileW failed for {path}: {}", unsafe { GetLastError() }));
+    }
+
+    Ok(owned)
+}
+
+fn get_reparse_tag(path: &str) -> Result<u32, String> {
+    let handle = open_file_handle(path, true)?;
+
+    let mut bytes_returned = 0_u32;
+    let mut out_buffer = vec![0_u8; 16 * 1024];
+
+    let ok = unsafe {
+        DeviceIoControl(
+            handle.0,
+            FSCTL_GET_REPARSE_POINT,
+            std::ptr::null_mut(),
+            0,
+            out_buffer.as_mut_ptr() as *mut c_void,
+            out_buffer.len() as u32,
+            &mut bytes_returned,
+            std::ptr::null_mut(),
+        )
+    };
+
+    if ok == 0 {
+        return Err(format!(
+            "FSCTL_GET_REPARSE_POINT failed for {path}: {}",
+            unsafe { GetLastError() }
+        ));
+    }
+
+    if bytes_returned < 4 {
+        return Err("Reparse buffer too short".to_string());
+    }
+
+    let mut tag_bytes = [0_u8; 4];
+    tag_bytes.copy_from_slice(&out_buffer[0..4]);
+    Ok(u32::from_le_bytes(tag_bytes))
+}
+
+fn get_hardlink_count(path: &str) -> Result<u32, String> {
+    let handle = open_file_handle(path, false)?;
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+
+    let ok = unsafe { GetFileInformationByHandle(handle.0, &mut info as *mut BY_HANDLE_FILE_INFORMATION) };
+
+    if ok == 0 {
+        return Err(format!(
+            "GetFileInformationByHandle failed for {path}: {}",
+            unsafe { GetLastError() }
+        ));
+    }
+
+    Ok(info.nNumberOfLinks)
+}
+
+fn resolve_path_from_frn(
+    frn: u64,
+    drive: &str,
+    map: &HashMap<u64, FrnNode>,
+    cache: &mut HashMap<u64, String>,
+) -> Option<String> {
+    if let Some(value) = cache.get(&frn) {
+        return Some(value.clone());
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    let mut current = frn;
+    let mut visited: HashSet<u64> = HashSet::new();
+
+    for _ in 0..256 {
+        if !visited.insert(current) {
+            break;
+        }
+
+        let node = match map.get(&current) {
+            Some(value) => value,
+            None => break,
+        };
+
+        if !node.name.is_empty() {
+            parts.push(node.name.clone());
+        }
+
+        if node.parent_frn == 0 || node.parent_frn == current {
+            break;
+        }
+
+        current = node.parent_frn;
+    }
+
+    parts.reverse();
+
+    let mut full = normalize_drive(drive);
+    if !parts.is_empty() {
+        full.push_str(&parts.join("\\"));
+    }
+
+    cache.insert(frn, full.clone());
+    Some(full)
+}
+
+fn parse_usn_records(
+    buffer: &[u8],
+    bytes_returned: usize,
+    nodes: &mut HashMap<u64, FrnNode>,
+    scanned: &mut u64,
+    app: &AppHandle,
+) -> Result<u64, String> {
+    if bytes_returned < size_of::<u64>() {
+        return Ok(0);
+    }
+
+    let mut next_frn_bytes = [0_u8; 8];
+    next_frn_bytes.copy_from_slice(&buffer[0..8]);
+    let next_start_frn = u64::from_le_bytes(next_frn_bytes);
+
+    let mut offset = size_of::<u64>();
+
+    while offset + size_of::<UsnRecordV2Header>() <= bytes_returned {
+        let header_ptr = unsafe { buffer.as_ptr().add(offset) as *const UsnRecordV2Header };
+        let header = unsafe { std::ptr::read_unaligned(header_ptr) };
+
+        if header.record_length == 0 {
+            break;
+        }
+
+        let record_len = header.record_length as usize;
+
+        if offset + record_len > bytes_returned {
+            break;
+        }
+
+        if header.major_version == 2 {
+            let name_start = offset + header.file_name_offset as usize;
+            let name_len_bytes = header.file_name_length as usize;
+            let name_end = name_start.saturating_add(name_len_bytes);
+
+            if name_end <= offset + record_len && name_len_bytes % 2 == 0 {
+                let name_len_u16 = name_len_bytes / 2;
+                let name_ptr = unsafe { buffer.as_ptr().add(name_start) as *const u16 };
+                let name_slice = unsafe { std::slice::from_raw_parts(name_ptr, name_len_u16) };
+
+                let name = String::from_utf16_lossy(name_slice);
+
+                nodes.insert(
+                    header.file_reference_number,
+                    FrnNode {
+                        parent_frn: header.parent_file_reference_number,
+                        name,
+                        file_attributes: header.file_attributes,
+                    },
+                );
+
+                *scanned += 1;
+
+                if *scanned % 1000 == 0 {
+                    let _ = app.emit(
+                        "scan:progress",
+                        ScanProgress {
+                            scanned: *scanned,
+                            found: 0,
+                            current_path: "USN journal".to_string(),
+                        },
+                    );
+                }
+            }
+        }
+
+        offset += record_len;
+    }
+
+    Ok(next_start_frn)
+}
+
+fn open_volume_handle(drive: &str) -> Result<OwnedHandle, String> {
+    let volume = format!(r"\\.\{}", drive.trim().trim_end_matches('\\'));
+    let wide = to_wide_null(&volume);
+
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_READ_ACCESS,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            std::ptr::null_mut(),
+        )
+    };
+
+    let owned = OwnedHandle(handle);
+
+    if !owned.is_valid() {
+        return Err(format!(
+            "CreateFileW failed for volume {volume}: {}",
+            unsafe { GetLastError() }
+        ));
+    }
+
+    Ok(owned)
+}
+
+fn scan_with_usn(drive: &str, app: &AppHandle) -> Result<Vec<LinkEntry>, String> {
+    if !crate::elevation::is_elevated() {
+        return Err("USN Journal requires elevated privileges".to_string());
+    }
+
+    let config = load_config()?;
+    let volume = open_volume_handle(drive)?;
+
+    let mut journal_data = UsnJournalDataV0::default();
+    let mut bytes_returned = 0_u32;
+
+    let ok = unsafe {
+        DeviceIoControl(
+            volume.0,
+            FSCTL_QUERY_USN_JOURNAL,
+            std::ptr::null_mut(),
+            0,
+            &mut journal_data as *mut UsnJournalDataV0 as *mut c_void,
+            size_of::<UsnJournalDataV0>() as u32,
+            &mut bytes_returned,
+            std::ptr::null_mut(),
+        )
+    };
+
+    if ok == 0 {
+        return Err(format!(
+            "FSCTL_QUERY_USN_JOURNAL failed: {}",
+            unsafe { GetLastError() }
+        ));
+    }
+
+    let mut mft_enum_data = MftEnumDataV0 {
+        start_file_reference_number: 0,
+        low_usn: 0,
+        high_usn: journal_data.next_usn,
+    };
+
+    let mut output_buffer = vec![0_u8; 1024 * 1024];
+    let mut nodes: HashMap<u64, FrnNode> = HashMap::new();
+    let mut scanned = 0_u64;
+
+    loop {
+        let mut returned = 0_u32;
+
+        let ok = unsafe {
+            DeviceIoControl(
+                volume.0,
+                FSCTL_ENUM_USN_DATA,
+                &mut mft_enum_data as *mut MftEnumDataV0 as *mut c_void,
+                size_of::<MftEnumDataV0>() as u32,
+                output_buffer.as_mut_ptr() as *mut c_void,
+                output_buffer.len() as u32,
+                &mut returned,
+                std::ptr::null_mut(),
+            )
+        };
+
+        if ok == 0 {
+            let code = unsafe { GetLastError() };
+
+            if code == ERROR_HANDLE_EOF {
+                break;
+            }
+
+            return Err(format!("FSCTL_ENUM_USN_DATA failed with error code {code}"));
+        }
+
+        if returned as usize <= size_of::<u64>() {
+            break;
+        }
+
+        let next = parse_usn_records(
+            &output_buffer,
+            returned as usize,
+            &mut nodes,
+            &mut scanned,
+            app,
+        )?;
+
+        if next == 0 || next == mft_enum_data.start_file_reference_number {
+            break;
+        }
+
+        mft_enum_data.start_file_reference_number = next;
+    }
+
+    let mut entries: Vec<LinkEntry> = Vec::new();
+    let mut cache: HashMap<u64, String> = HashMap::new();
+    let mut found = 0_u64;
+    let mut processed = 0_u64;
+
+    for (frn, node) in &nodes {
+        let path = match resolve_path_from_frn(*frn, drive, &nodes, &mut cache) {
+            Some(value) => value,
+            None => continue,
+        };
+
+        if should_exclude(Path::new(&path), &config.scan.excluded_paths) {
+            continue;
+        }
+
+        processed += 1;
+
+        if node.file_attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            let tag = get_reparse_tag(&path).unwrap_or_default();
+            let link_type = match tag {
+                IO_REPARSE_TAG_MOUNT_POINT => LinkType::Junction,
+                IO_REPARSE_TAG_SYMLINK => LinkType::Symlink,
+                _ => LinkType::Symlink,
+            };
+
+            let target = fs::read_link(&path)
+                .map(|value| value.to_string_lossy().to_string())
+                .unwrap_or_default();
+
+            entries.push(LinkEntry {
+                path: path.clone(),
+                target,
+                link_type,
+                status: LinkStatus::Ok,
+            });
+
+            found += 1;
+        } else if node.file_attributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+            if get_hardlink_count(&path).unwrap_or(0) > 1 || has_multiple_hardlinks(Path::new(&path)) {
+                entries.push(LinkEntry {
+                    path: path.clone(),
+                    target: find_hardlink_target(Path::new(&path)),
+                    link_type: LinkType::Hardlink,
+                    status: LinkStatus::Ok,
+                });
+
+                found += 1;
+            }
+        }
+
+        if processed % 1000 == 0 {
+            let _ = app.emit(
+                "scan:progress",
+                ScanProgress {
+                    scanned,
+                    found,
+                    current_path: path,
+                },
+            );
+        }
+    }
+
+    Ok(entries)
+}
+
+fn collect_walkdir_entries<F>(
+    root_path: &Path,
+    excluded_paths: &[String],
+    mut on_progress: F,
+) -> Vec<LinkEntry>
+where
+    F: FnMut(u64, u64, &Path),
+{
     let mut scanned = 0_u64;
     let mut found = 0_u64;
     let mut entries: Vec<LinkEntry> = Vec::new();
 
-    for item in WalkDir::new(&root_path)
+    for item in WalkDir::new(root_path)
         .follow_links(false)
         .into_iter()
         .filter_map(Result::ok)
     {
         let path = item.path().to_path_buf();
 
-        if should_exclude(&path, &config.scan.excluded_paths) {
+        if should_exclude(&path, excluded_paths) {
             continue;
         }
 
@@ -121,72 +603,61 @@ fn scan_with_walkdir(drive: &str, app: &AppHandle) -> Result<Vec<LinkEntry>, Str
             });
 
             found += 1;
-        } else {
-            #[cfg(windows)]
-            {
-                use std::os::windows::fs::MetadataExt;
+        } else if !metadata.is_dir() && has_multiple_hardlinks(&path) {
+            entries.push(LinkEntry {
+                path: path.to_string_lossy().to_string(),
+                target: find_hardlink_target(&path),
+                link_type: LinkType::Hardlink,
+                status: LinkStatus::Ok,
+            });
 
-                if !metadata.is_dir() && metadata.number_of_links() > 1 {
-                    entries.push(LinkEntry {
-                        path: path.to_string_lossy().to_string(),
-                        target: find_hardlink_target(&path),
-                        link_type: LinkType::Hardlink,
-                        status: LinkStatus::Ok,
-                    });
-
-                    found += 1;
-                }
-            }
+            found += 1;
         }
 
         if scanned % 500 == 0 {
+            on_progress(scanned, found, &path);
+        }
+    }
+
+    entries
+}
+
+#[allow(dead_code)]
+pub fn scan_path_with_walkdir_for_tests(path: &str) -> Result<Vec<LinkEntry>, String> {
+    let root_path = PathBuf::from(path);
+
+    if !root_path.exists() {
+        return Err(format!("Path does not exist: {path}"));
+    }
+
+    Ok(collect_walkdir_entries(&root_path, &[], |_scanned, _found, _current_path| {}))
+}
+
+fn scan_with_walkdir(drive: &str, app: &AppHandle) -> Result<Vec<LinkEntry>, String> {
+    let config = load_config()?;
+    let root = normalize_drive(drive);
+    let root_path = PathBuf::from(&root);
+
+    if !root_path.exists() {
+        return Err(format!("Volume path does not exist: {root}"));
+    }
+
+    let entries = collect_walkdir_entries(
+        &root_path,
+        &config.scan.excluded_paths,
+        |scanned, found, current_path| {
             let _ = app.emit(
                 "scan:progress",
                 ScanProgress {
                     scanned,
                     found,
-                    current_path: path.to_string_lossy().to_string(),
+                    current_path: current_path.to_string_lossy().to_string(),
                 },
             );
-        }
-    }
-
-    Ok(entries)
-}
-
-#[derive(Debug, Deserialize)]
-struct JournalProbe {
-    available: bool,
-}
-
-fn scan_with_usn(drive: &str, _app: &AppHandle) -> Result<Vec<LinkEntry>, String> {
-    if !crate::elevation::is_elevated() {
-        return Err("USN Journal requires elevated privileges".to_string());
-    }
-
-    let script = format!(
-        "$vol='\\\\.\\{}'; try {{ fsutil usn queryjournal $vol | Out-Null; [pscustomobject]@{{available=$true}} }} catch {{ [pscustomobject]@{{available=$false}} }} | ConvertTo-Json -Compress",
-        drive.trim_end_matches(':')
+        },
     );
 
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .output()
-        .map_err(|e| format!("Failed to probe USN journal: {e}"))?;
-
-    if !output.status.success() {
-        return Err("USN Journal probe failed".to_string());
-    }
-
-    let payload = String::from_utf8_lossy(&output.stdout).to_string();
-    let probe = serde_json::from_str::<JournalProbe>(&payload)
-        .map_err(|e| format!("Failed to parse USN probe output: {e}"))?;
-
-    if !probe.available {
-        return Err("USN Journal unavailable on this volume".to_string());
-    }
-
-    Err("USN Journal scanner is not enabled in this build, using walkdir fallback".to_string())
+    Ok(entries)
 }
 
 #[tauri::command]

@@ -27,12 +27,21 @@ fn detect_link_type(path: &str) -> Result<LinkType, String> {
             Ok(LinkType::Symlink)
         }
     } else {
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::MetadataExt;
+        let output = Command::new("fsutil")
+            .args(["hardlink", "list", path])
+            .output();
 
-            if metadata.number_of_links() > 1 {
-                return Ok(LinkType::Hardlink);
+        if let Ok(value) = output {
+            if value.status.success() {
+                let count = String::from_utf8_lossy(&value.stdout)
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .count();
+
+                if count > 1 {
+                    return Ok(LinkType::Hardlink);
+                }
             }
         }
 
@@ -98,7 +107,7 @@ pub fn create_link_internal(
                 return Err("Hardlink requires source and target to be on the same volume".to_string());
             }
 
-            std::os::windows::fs::hard_link(target_path, link_path).map_err(map_error)?;
+            fs::hard_link(target_path, link_path).map_err(map_error)?;
         }
     }
 
@@ -110,12 +119,38 @@ pub fn delete_link_internal(path: &str) -> Result<(), String> {
 
     if metadata.file_type().is_symlink() {
         if metadata.is_dir() {
-            fs::remove_dir(path).map_err(map_error)?;
+            if let Err(error) = fs::remove_dir(path) {
+                if error.raw_os_error() == Some(5) {
+                    let status = Command::new("cmd")
+                        .args(["/C", "rmdir", path])
+                        .status()
+                        .map_err(|e| format!("Failed to remove directory link: {e}"))?;
+
+                    if !status.success() {
+                        return Err(map_error(error));
+                    }
+                } else {
+                    return Err(map_error(error));
+                }
+            }
         } else {
             fs::remove_file(path).map_err(map_error)?;
         }
     } else if metadata.is_dir() {
-        fs::remove_dir(path).map_err(map_error)?;
+        if let Err(error) = fs::remove_dir(path) {
+            if error.raw_os_error() == Some(5) {
+                let status = Command::new("cmd")
+                    .args(["/C", "rmdir", path])
+                    .status()
+                    .map_err(|e| format!("Failed to remove directory link: {e}"))?;
+
+                if !status.success() {
+                    return Err(map_error(error));
+                }
+            } else {
+                return Err(map_error(error));
+            }
+        }
     } else {
         fs::remove_file(path).map_err(map_error)?;
     }

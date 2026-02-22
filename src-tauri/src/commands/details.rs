@@ -24,12 +24,21 @@ fn detect_link_type(path: &str) -> LinkType {
                     LinkType::Symlink
                 }
             } else {
-                #[cfg(windows)]
-                {
-                    use std::os::windows::fs::MetadataExt;
+                let output = Command::new("fsutil")
+                    .args(["hardlink", "list", path])
+                    .output();
 
-                    if metadata.number_of_links() > 1 {
-                        return LinkType::Hardlink;
+                if let Ok(value) = output {
+                    if value.status.success() {
+                        let count = String::from_utf8_lossy(&value.stdout)
+                            .lines()
+                            .map(str::trim)
+                            .filter(|line| !line.is_empty())
+                            .count();
+
+                        if count > 1 {
+                            return LinkType::Hardlink;
+                        }
                     }
                 }
 
