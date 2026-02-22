@@ -1,0 +1,2 @@
+cargo:rustc-link-search=native=C:\Users\k1NG\Desktop\BASTIANPROJECTS\transformer\src-tauri\target-debug-temp\debug\build\webview2-com-sys-ae5fbb6eff15c8bb\out\x64
+cargo:rustc-link-lib=advapi32

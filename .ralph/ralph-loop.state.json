@@ -1,13 +1,13 @@
 {
   "active": true,
-  "iteration": 5,
+  "iteration": 1,
   "minIterations": 1,
-  "maxIterations": 20,
+  "maxIterations": 3,
   "completionPromise": "COMPLETE",
-  "tasksMode": false,
+  "tasksMode": true,
   "taskPromise": "READY_FOR_NEXT_TASK",
-  "prompt": "Переделай интерфейс нашего приложения под стилистику проекта из C:\\Users\\k1NG\\Desktop\\BASTIANPROJECTS\\vidocean\\SaaS_video_tools",
-  "startedAt": "2026-02-22T21:52:11.940Z",
+  "prompt": "Значительно улучши интерфейс нашего приложения; опирайся на taste.md",
+  "startedAt": "2026-02-22T22:27:30.219Z",
   "model": "",
   "agent": "codex"
 }

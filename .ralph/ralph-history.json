@@ -2,79 +2,14 @@
   "iterations": [
     {
       "iteration": 1,
-      "startedAt": "2026-02-22T21:52:13.348Z",
-      "endedAt": "2026-02-22T21:52:13.360Z",
-      "durationMs": 12,
-      "agent": "codex",
-      "model": "",
-      "toolsUsed": {},
-      "filesModified": [],
-      "exitCode": -1,
-      "completionDetected": false,
-      "errors": [
-        "Error: ENOENT: no such file or directory, uv_spawn 'codex'"
-      ]
-    },
-    {
-      "iteration": 2,
-      "startedAt": "2026-02-22T21:52:16.702Z",
-      "endedAt": "2026-02-22T21:52:16.707Z",
-      "durationMs": 5,
-      "agent": "codex",
-      "model": "",
-      "toolsUsed": {},
-      "filesModified": [],
-      "exitCode": -1,
-      "completionDetected": false,
-      "errors": [
-        "Error: ENOENT: no such file or directory, uv_spawn 'codex'"
-      ]
-    },
-    {
-      "iteration": 3,
-      "startedAt": "2026-02-22T21:53:25.702Z",
-      "endedAt": "2026-02-22T21:53:25.704Z",
-      "durationMs": 2,
-      "agent": "codex",
-      "model": "",
-      "toolsUsed": {},
-      "filesModified": [],
-      "exitCode": -1,
-      "completionDetected": false,
-      "errors": [
-        "Error: ENOENT: no such file or directory, uv_spawn 'codex'"
-      ]
-    },
-    {
-      "iteration": 4,
-      "startedAt": "2026-02-22T21:57:55.730Z",
-      "endedAt": "2026-02-22T22:07:01.681Z",
-      "durationMs": 544582,
+      "startedAt": "2026-02-22T22:27:32.817Z",
+      "endedAt": "2026-02-22T22:31:28.435Z",
+      "durationMs": 233019,
       "agent": "codex",
       "model": "",
       "toolsUsed": {
-        "on": 1,
-        "without": 2,
-        "slower": 2,
-        "the": 3
-      },
-      "filesModified": [],
-      "exitCode": 0,
-      "completionDetected": false,
-      "errors": [
-        "--color-error: #ff3b30;",
-        "\"Error: ENOENT: no such file or directory, uv_spawn 'codex'\"",
-        "error: string"
-      ]
-    },
-    {
-      "iteration": 5,
-      "startedAt": "2026-02-22T22:07:05.445Z",
-      "endedAt": "2026-02-22T22:13:06.227Z",
-      "durationMs": 358163,
-      "agent": "codex",
-      "model": "",
-      "toolsUsed": {
+        "parallel": 1,
+        "these": 1,
         "without": 1,
         "slower": 1
       },
@@ -82,19 +17,16 @@
       "exitCode": 0,
       "completionDetected": false,
       "errors": [
-        "\"Error: ENOENT: no such file or directory, uv_spawn 'codex'\"",
         "error: string"
       ]
     }
   ],
-  "totalDurationMs": 902764,
+  "totalDurationMs": 233019,
   "struggleIndicators": {
     "repeatedErrors": {
-      "--color-error: #ff3b30;": 1,
-      "\"Error: ENOENT: no such file or directory, uv_spawn 'codex'\"": 2,
-      "error: string": 2
+      "error: string": 1
     },
-    "noProgressIterations": 2,
+    "noProgressIterations": 1,
     "shortIterations": 0
   }
 }
