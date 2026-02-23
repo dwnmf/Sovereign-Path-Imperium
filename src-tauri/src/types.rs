@@ -51,6 +51,25 @@ pub struct ScanProgress {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanBatch {
+    pub entries: Vec<LinkEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ScanMode {
+    UsnJournal,
+    WalkdirFallback,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanResult {
+    pub entries: Vec<LinkEntry>,
+    pub mode: ScanMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VolumeInfo {
     pub letter: String,
     pub label: String,

@@ -38,6 +38,18 @@ export function HistoryPanel({
   onUndo,
   onPage,
 }: HistoryPanelProps) {
+  const latestSuccessfulItem = offset === 0 ? items.find((item) => item.success) : undefined
+  const canUndo = !loading && latestSuccessfulItem !== undefined && latestSuccessfulItem.action_type !== 'Undo'
+  const undoTitle = loading
+    ? 'History is loading'
+    : offset > 0
+      ? 'Go to the first page to undo the latest action'
+      : !canUndo
+        ? 'Nothing to undo'
+        : ''
+  const canPagePrev = !loading && offset > 0
+  const canPageNext = !loading && items.length >= pageSize
+
   return (
     <aside className={`historyPanel ${open ? 'historyPanel--open' : ''}`}>
       <div className="historyHeader">
@@ -52,8 +64,8 @@ export function HistoryPanel({
 
       <button
         className="button button--icon"
-        disabled={items[0]?.action_type === 'Undo'}
-        title={items[0]?.action_type === 'Undo' ? 'Nothing to undo' : ''}
+        disabled={!canUndo}
+        title={undoTitle}
         onClick={onUndo}
         type="button"
       >
@@ -70,7 +82,7 @@ export function HistoryPanel({
         </div>
       ) : null}
 
-      <div className="historyList">
+      <div className="historyList" aria-busy={loading}>
         {items.map((item) => (
           <div className="historyItem" key={item.id}>
             <div className="historyItemTop">
@@ -90,8 +102,14 @@ export function HistoryPanel({
       <div className="historyPager">
         <button
           className="button"
-          disabled={offset === 0}
-          onClick={() => onPage(Math.max(0, offset - pageSize))}
+          disabled={!canPagePrev}
+          onClick={() => {
+            if (!canPagePrev) {
+              return
+            }
+
+            onPage(Math.max(0, offset - pageSize))
+          }}
           type="button"
         >
           <ArrowLeft size={14} weight="bold" />
@@ -99,8 +117,14 @@ export function HistoryPanel({
         </button>
         <button
           className="button button--icon"
-          disabled={items.length < pageSize}
-          onClick={() => onPage(offset + pageSize)}
+          disabled={!canPageNext}
+          onClick={() => {
+            if (!canPageNext) {
+              return
+            }
+
+            onPage(offset + pageSize)
+          }}
           type="button"
         >
           <ArrowRight size={14} weight="bold" />

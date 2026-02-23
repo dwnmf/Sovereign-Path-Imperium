@@ -1,6 +1,8 @@
-import { CheckCircle, CircleNotch, WarningCircle } from '@phosphor-icons/react'
+import { CheckCircle, CircleNotch, Lightning, WarningCircle } from '@phosphor-icons/react'
 
 interface StatusBarProps {
+  symlinks: number
+  hardlinks: number
   working: number
   broken: number
   junctions: number
@@ -9,11 +11,14 @@ interface StatusBarProps {
   scanning: boolean
   volume: string
   method: string
+  fastMode: boolean
 }
 
 const ICON_SIZE = 14
 
 export function StatusBar({
+  symlinks,
+  hardlinks,
   working,
   broken,
   junctions,
@@ -22,9 +27,12 @@ export function StatusBar({
   scanning,
   volume,
   method,
+  fastMode,
 }: StatusBarProps) {
   return (
     <footer className="statusBar">
+      <span className="statusMetric">{symlinks.toLocaleString()} symlinks</span>
+      <span className="statusMetric">{hardlinks.toLocaleString()} hardlinks</span>
       <span className="statusMetric">
         <CheckCircle size={ICON_SIZE} weight="duotone" />
         {working.toLocaleString()} working
@@ -38,6 +46,10 @@ export function StatusBar({
       <span className="statusSpacer" />
       <span>
         {volume} | {method}
+      </span>
+      <span className={`statusMetric statusEngine ${fastMode ? 'statusEngine--fast' : 'statusEngine--compat'}`}>
+        <Lightning size={ICON_SIZE} weight="duotone" />
+        FAST {fastMode ? 'ON' : 'OFF'}
       </span>
       {scanning ? (
         <span className="statusMetric statusMetric--scan">

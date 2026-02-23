@@ -68,6 +68,7 @@ function splitPath(path: string): { dir: string; name: string } {
 }
 
 function Row({
+  ariaAttributes,
   index,
   entries,
   activePath,
@@ -75,11 +76,17 @@ function Row({
   style,
 }: RowComponentProps<RowProps>) {
   const entry = entries[index]
+
+  // During fast filter/scan updates, virtualized rows can briefly request a stale index.
+  if (!entry) {
+    return null
+  }
+
   const active = activePath === entry.path
   const pathParts = splitPath(entry.path)
 
   return (
-    <div style={style} className="linkListRowWrap">
+    <div {...ariaAttributes} style={style} className="linkListRowWrap">
       <button
         type="button"
         className={`linkListRow ${active ? 'linkListRow--active' : ''}`}

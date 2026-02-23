@@ -1,4 +1,6 @@
 use std::fs;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
 
@@ -15,6 +17,34 @@ fn map_error(error: std::io::Error) -> String {
     }
 
     error.to_string()
+}
+
+fn quote_cmd_path(path: &str) -> Result<String, String> {
+    if path.contains('"') {
+        return Err("Path contains unsupported quote characters".to_string());
+    }
+
+    // Prevent environment-variable expansion when invoking cmd built-ins.
+    let escaped = path.replace('%', "%%");
+    Ok(format!("\"{escaped}\""))
+}
+
+fn run_cmd_builtin(command: &str) -> Result<std::process::ExitStatus, String> {
+    let mut cmd = Command::new("cmd");
+    cmd.args(["/V:OFF", "/C"]);
+
+    #[cfg(windows)]
+    {
+        cmd.raw_arg(command);
+    }
+
+    #[cfg(not(windows))]
+    {
+        cmd.arg(command);
+    }
+
+    cmd.status()
+        .map_err(|e| format!("Failed to execute command: {e}"))
 }
 
 fn detect_link_type(path: &str) -> Result<LinkType, String> {
@@ -86,9 +116,10 @@ pub fn create_link_internal(
                 return Err("Junction target must be an absolute path".to_string());
             }
 
-            let status = Command::new("cmd")
-                .args(["/C", "mklink", "/J", link_path, target_path])
-                .status()
+            let link_arg = quote_cmd_path(link_path)?;
+            let target_arg = quote_cmd_path(target_path)?;
+            let command = format!("mklink /J {link_arg} {target_arg}");
+            let status = run_cmd_builtin(&command)
                 .map_err(|e| format!("Failed to create junction: {e}"))?;
 
             if !status.success() {
@@ -121,9 +152,9 @@ pub fn delete_link_internal(path: &str) -> Result<(), String> {
         if metadata.is_dir() {
             if let Err(error) = fs::remove_dir(path) {
                 if error.raw_os_error() == Some(5) {
-                    let status = Command::new("cmd")
-                        .args(["/C", "rmdir", path])
-                        .status()
+                    let path_arg = quote_cmd_path(path)?;
+                    let command = format!("rmdir {path_arg}");
+                    let status = run_cmd_builtin(&command)
                         .map_err(|e| format!("Failed to remove directory link: {e}"))?;
 
                     if !status.success() {
@@ -139,9 +170,9 @@ pub fn delete_link_internal(path: &str) -> Result<(), String> {
     } else if metadata.is_dir() {
         if let Err(error) = fs::remove_dir(path) {
             if error.raw_os_error() == Some(5) {
-                let status = Command::new("cmd")
-                    .args(["/C", "rmdir", path])
-                    .status()
+                let path_arg = quote_cmd_path(path)?;
+                let command = format!("rmdir {path_arg}");
+                let status = run_cmd_builtin(&command)
                     .map_err(|e| format!("Failed to remove directory link: {e}"))?;
 
                 if !status.success() {

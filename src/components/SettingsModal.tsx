@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { Config, VolumeInfo } from '../types'
 
 interface SettingsModalProps {
@@ -11,6 +11,18 @@ interface SettingsModalProps {
   onToggleShell: (enabled: boolean) => Promise<void>
 }
 
+function normalizeError(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message
+  }
+
+  if (typeof error === 'string' && error.trim().length > 0) {
+    return error
+  }
+
+  return fallback
+}
+
 export function SettingsModal({
   open,
   volumes,
@@ -21,8 +33,64 @@ export function SettingsModal({
   onToggleShell,
 }: SettingsModalProps) {
   const [pendingExclude, setPendingExclude] = useState('')
+  const [isSavingConfig, setIsSavingConfig] = useState(false)
+  const [isTogglingShell, setIsTogglingShell] = useState(false)
+  const [actionError, setActionError] = useState('')
 
-  const excluded = useMemo(() => config?.scan.excluded_paths ?? [], [config])
+  useEffect(() => {
+    if (!open) {
+      setPendingExclude('')
+      setActionError('')
+      setIsSavingConfig(false)
+      setIsTogglingShell(false)
+    }
+  }, [open])
+
+  const excluded = useMemo(() => {
+    if (!Array.isArray(config?.scan.excluded_paths)) {
+      return []
+    }
+
+    return config.scan.excluded_paths
+  }, [config])
+
+  const controlsDisabled = isSavingConfig || isTogglingShell
+
+  const applyConfigChange = async (next: Config): Promise<boolean> => {
+    if (isSavingConfig || isTogglingShell) {
+      return false
+    }
+
+    setIsSavingConfig(true)
+    setActionError('')
+
+    try {
+      await onConfigChange(next)
+      return true
+    } catch (error) {
+      setActionError(normalizeError(error, 'Unable to save settings.'))
+      return false
+    } finally {
+      setIsSavingConfig(false)
+    }
+  }
+
+  const toggleShell = async (enabled: boolean) => {
+    if (isSavingConfig || isTogglingShell) {
+      return
+    }
+
+    setIsTogglingShell(true)
+    setActionError('')
+
+    try {
+      await onToggleShell(enabled)
+    } catch (error) {
+      setActionError(normalizeError(error, 'Unable to update shell integration.'))
+    } finally {
+      setIsTogglingShell(false)
+    }
+  }
 
   if (!open || !config) {
     return null
@@ -41,8 +109,9 @@ export function SettingsModal({
             <span className="fieldHint">Volume used when opening symview.</span>
             <select
               value={config.scan.default_volume}
+              disabled={controlsDisabled}
               onChange={(event) =>
-                void onConfigChange({
+                void applyConfigChange({
                   ...config,
                   scan: {
                     ...config.scan,
@@ -62,8 +131,9 @@ export function SettingsModal({
           <label className="checkboxRow">
             <input
               checked={config.scan.auto_scan_on_start}
+              disabled={controlsDisabled}
               onChange={(event) =>
-                void onConfigChange({
+                void applyConfigChange({
                   ...config,
                   scan: {
                     ...config.scan,
@@ -83,8 +153,9 @@ export function SettingsModal({
                 <button
                   className="button"
                   type="button"
+                  disabled={controlsDisabled}
                   onClick={() =>
-                    void onConfigChange({
+                    void applyConfigChange({
                       ...config,
                       scan: {
                         ...config.scan,
@@ -103,11 +174,13 @@ export function SettingsModal({
             <input
               placeholder="Add excluded path"
               value={pendingExclude}
+              disabled={controlsDisabled}
               onChange={(event) => setPendingExclude(event.target.value)}
             />
             <button
               className="button"
               type="button"
+              disabled={controlsDisabled}
               onClick={() => {
                 const value = pendingExclude.trim()
 
@@ -115,15 +188,19 @@ export function SettingsModal({
                   return
                 }
 
-                void onConfigChange({
-                  ...config,
-                  scan: {
-                    ...config.scan,
-                    excluded_paths: [...excluded, value],
-                  },
-                })
+                void (async () => {
+                  const saved = await applyConfigChange({
+                    ...config,
+                    scan: {
+                      ...config.scan,
+                      excluded_paths: [...excluded, value],
+                    },
+                  })
 
-                setPendingExclude('')
+                  if (saved) {
+                    setPendingExclude('')
+                  }
+                })()
               }}
             >
               Add
@@ -136,14 +213,17 @@ export function SettingsModal({
           <label className="checkboxRow">
             <input
               checked={shellRegistered}
+              disabled={controlsDisabled}
               onChange={(event) => {
-                void onToggleShell(event.target.checked)
+                void toggleShell(event.target.checked)
               }}
               type="checkbox"
             />
             Add "Open in symview" to Explorer context menu
           </label>
         </section>
+
+        {actionError ? <div className="inlineError">{actionError}</div> : null}
 
         <div className="modalActions">
           <button className="button" onClick={onClose} type="button">

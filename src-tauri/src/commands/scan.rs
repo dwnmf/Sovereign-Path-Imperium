@@ -18,11 +18,12 @@ use windows_sys::Win32::System::IO::DeviceIoControl;
 use windows_sys::Win32::System::Ioctl::{FSCTL_ENUM_USN_DATA, FSCTL_GET_REPARSE_POINT, FSCTL_QUERY_USN_JOURNAL};
 
 use crate::config::load_config;
-use crate::types::{LinkEntry, LinkStatus, LinkType, ScanProgress};
+use crate::types::{LinkEntry, LinkStatus, LinkType, ScanBatch, ScanMode, ScanProgress, ScanResult};
 
 const GENERIC_READ_ACCESS: u32 = 0x8000_0000;
 const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA0000003;
 const IO_REPARSE_TAG_SYMLINK: u32 = 0xA000000C;
+const SCAN_BATCH_SIZE: usize = 256;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -94,26 +95,84 @@ fn to_wide_null(value: &str) -> Vec<u16> {
         .collect()
 }
 
-fn normalize_drive(drive: &str) -> String {
+fn parse_drive_letter(drive: &str) -> Result<char, String> {
     let trimmed = drive.trim();
+    let mut chars = trimmed.chars();
 
-    if trimmed.ends_with('\\') {
-        trimmed.to_string()
-    } else if trimmed.ends_with(':') {
-        format!("{trimmed}\\")
-    } else {
-        format!("{trimmed}:\\")
+    let letter = chars
+        .next()
+        .ok_or_else(|| "Drive is empty. Expected format like C:".to_string())?;
+
+    if !letter.is_ascii_alphabetic() {
+        return Err(format!("Invalid drive letter in path: {drive}"));
     }
+
+    match chars.next() {
+        Some(':') => {}
+        _ => return Err(format!("Invalid drive format: {drive}. Expected format like C:")),
+    }
+
+    let remainder = chars.as_str();
+    if !remainder.is_empty() && !remainder.chars().all(|c| c == '\\' || c == '/') {
+        return Err(format!("Invalid drive format: {drive}. Expected format like C:"));
+    }
+
+    Ok(letter.to_ascii_uppercase())
+}
+
+fn normalize_drive(drive: &str) -> Result<String, String> {
+    let letter = parse_drive_letter(drive)?;
+    Ok(format!("{letter}:\\"))
+}
+
+fn normalize_path_for_prefix_compare(value: &str) -> String {
+    value
+        .trim()
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_lowercase()
 }
 
 fn should_exclude(path: &Path, excluded: &[String]) -> bool {
-    let text = path.to_string_lossy().to_lowercase();
-    excluded
-        .iter()
-        .any(|item| !item.trim().is_empty() && text.starts_with(&item.to_lowercase()))
+    let path_text = normalize_path_for_prefix_compare(&path.to_string_lossy());
+
+    excluded.iter().any(|item| {
+        let excluded_text = normalize_path_for_prefix_compare(item);
+        if excluded_text.is_empty() {
+            return false;
+        }
+
+        if path_text == excluded_text {
+            return true;
+        }
+
+        let mut excluded_prefix = excluded_text;
+        excluded_prefix.push('\\');
+        path_text.starts_with(&excluded_prefix)
+    })
+}
+
+fn emit_scan_batch(app: &AppHandle, batch: &mut Vec<LinkEntry>) {
+    if batch.is_empty() {
+        return;
+    }
+
+    let payload = ScanBatch {
+        entries: std::mem::take(batch),
+    };
+    let _ = app.emit("scan:batch", payload);
 }
 
 fn map_symlink_type(path: &Path, target: &str) -> LinkType {
+    let path_text = path.to_string_lossy().to_string();
+    if let Ok(tag) = get_reparse_tag(&path_text) {
+        return match tag {
+            IO_REPARSE_TAG_MOUNT_POINT => LinkType::Junction,
+            IO_REPARSE_TAG_SYMLINK => LinkType::Symlink,
+            _ => LinkType::Symlink,
+        };
+    }
+
     let resolved = if Path::new(target).is_absolute() {
         PathBuf::from(target)
     } else {
@@ -159,23 +218,6 @@ fn find_hardlink_target(path: &Path) -> String {
             lines.remove(0).to_string()
         }
         _ => path_str,
-    }
-}
-
-fn has_multiple_hardlinks(path: &Path) -> bool {
-    let path_str = path.to_string_lossy().to_string();
-    let output = Command::new("fsutil")
-        .args(["hardlink", "list", &path_str])
-        .output();
-
-    match output {
-        Ok(value) if value.status.success() => String::from_utf8_lossy(&value.stdout)
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .count()
-            > 1,
-        _ => false,
     }
 }
 
@@ -243,7 +285,7 @@ fn get_reparse_tag(path: &str) -> Result<u32, String> {
     Ok(u32::from_le_bytes(tag_bytes))
 }
 
-fn get_hardlink_count(path: &str) -> Result<u32, String> {
+fn get_hardlink_info(path: &str) -> Result<(u32, u64, u32), String> {
     let handle = open_file_handle(path, false)?;
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
 
@@ -256,7 +298,8 @@ fn get_hardlink_count(path: &str) -> Result<u32, String> {
         ));
     }
 
-    Ok(info.nNumberOfLinks)
+    let file_index = ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64;
+    Ok((info.dwVolumeSerialNumber, file_index, info.nNumberOfLinks))
 }
 
 fn resolve_path_from_frn(
@@ -296,7 +339,10 @@ fn resolve_path_from_frn(
 
     parts.reverse();
 
-    let mut full = normalize_drive(drive);
+    let mut full = match normalize_drive(drive) {
+        Ok(value) => value,
+        Err(_) => return None,
+    };
     if !parts.is_empty() {
         full.push_str(&parts.join("\\"));
     }
@@ -322,7 +368,7 @@ fn parse_usn_records(
 
     let mut offset = size_of::<u64>();
 
-    while offset + size_of::<UsnRecordV2Header>() <= bytes_returned {
+    while bytes_returned.saturating_sub(offset) >= size_of::<UsnRecordV2Header>() {
         let header_ptr = unsafe { buffer.as_ptr().add(offset) as *const UsnRecordV2Header };
         let header = unsafe { std::ptr::read_unaligned(header_ptr) };
 
@@ -331,17 +377,31 @@ fn parse_usn_records(
         }
 
         let record_len = header.record_length as usize;
+        if record_len < size_of::<UsnRecordV2Header>() {
+            break;
+        }
 
-        if offset + record_len > bytes_returned {
+        let record_end = match offset.checked_add(record_len) {
+            Some(value) => value,
+            None => break,
+        };
+
+        if record_end > bytes_returned {
             break;
         }
 
         if header.major_version == 2 {
-            let name_start = offset + header.file_name_offset as usize;
+            let name_start = match offset.checked_add(header.file_name_offset as usize) {
+                Some(value) => value,
+                None => break,
+            };
             let name_len_bytes = header.file_name_length as usize;
-            let name_end = name_start.saturating_add(name_len_bytes);
+            let name_end = match name_start.checked_add(name_len_bytes) {
+                Some(value) => value,
+                None => break,
+            };
 
-            if name_end <= offset + record_len && name_len_bytes % 2 == 0 {
+            if name_end <= record_end && name_len_bytes % 2 == 0 {
                 let name_len_u16 = name_len_bytes / 2;
                 let name_ptr = unsafe { buffer.as_ptr().add(name_start) as *const u16 };
                 let name_slice = unsafe { std::slice::from_raw_parts(name_ptr, name_len_u16) };
@@ -372,14 +432,15 @@ fn parse_usn_records(
             }
         }
 
-        offset += record_len;
+        offset = record_end;
     }
 
     Ok(next_start_frn)
 }
 
 fn open_volume_handle(drive: &str) -> Result<OwnedHandle, String> {
-    let volume = format!(r"\\.\{}", drive.trim().trim_end_matches('\\'));
+    let normalized_drive = normalize_drive(drive)?;
+    let volume = format!(r"\\.\{}", normalized_drive.trim_end_matches('\\'));
     let wide = to_wide_null(&volume);
 
     let handle = unsafe {
@@ -494,6 +555,8 @@ fn scan_with_usn(drive: &str, app: &AppHandle) -> Result<Vec<LinkEntry>, String>
 
     let mut entries: Vec<LinkEntry> = Vec::new();
     let mut cache: HashMap<u64, String> = HashMap::new();
+    let mut seen_hardlinks: HashSet<(u32, u64)> = HashSet::new();
+    let mut batch: Vec<LinkEntry> = Vec::with_capacity(SCAN_BATCH_SIZE);
     let mut found = 0_u64;
     let mut processed = 0_u64;
 
@@ -521,25 +584,35 @@ fn scan_with_usn(drive: &str, app: &AppHandle) -> Result<Vec<LinkEntry>, String>
                 .map(|value| value.to_string_lossy().to_string())
                 .unwrap_or_default();
 
-            entries.push(LinkEntry {
+            let entry = LinkEntry {
                 path: path.clone(),
                 target,
                 link_type,
                 status: LinkStatus::Ok,
-            });
+            };
+            batch.push(entry.clone());
+            entries.push(entry);
 
             found += 1;
         } else if node.file_attributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
-            if get_hardlink_count(&path).unwrap_or(0) > 1 || has_multiple_hardlinks(Path::new(&path)) {
-                entries.push(LinkEntry {
-                    path: path.clone(),
-                    target: find_hardlink_target(Path::new(&path)),
-                    link_type: LinkType::Hardlink,
-                    status: LinkStatus::Ok,
-                });
+            if let Ok((volume_serial, file_index, links_count)) = get_hardlink_info(&path) {
+                if links_count > 1 && seen_hardlinks.insert((volume_serial, file_index)) {
+                    let entry = LinkEntry {
+                        path: path.clone(),
+                        target: find_hardlink_target(Path::new(&path)),
+                        link_type: LinkType::Hardlink,
+                        status: LinkStatus::Ok,
+                    };
+                    batch.push(entry.clone());
+                    entries.push(entry);
 
-                found += 1;
+                    found += 1;
+                }
             }
+        }
+
+        if batch.len() >= SCAN_BATCH_SIZE {
+            emit_scan_batch(app, &mut batch);
         }
 
         if processed % 1000 == 0 {
@@ -554,20 +627,26 @@ fn scan_with_usn(drive: &str, app: &AppHandle) -> Result<Vec<LinkEntry>, String>
         }
     }
 
+    emit_scan_batch(app, &mut batch);
+
     Ok(entries)
 }
 
-fn collect_walkdir_entries<F>(
+fn collect_walkdir_entries<F, B>(
     root_path: &Path,
     excluded_paths: &[String],
     mut on_progress: F,
+    mut on_batch: B,
 ) -> Vec<LinkEntry>
 where
     F: FnMut(u64, u64, &Path),
+    B: FnMut(Vec<LinkEntry>),
 {
     let mut scanned = 0_u64;
     let mut found = 0_u64;
     let mut entries: Vec<LinkEntry> = Vec::new();
+    let mut seen_hardlinks: HashSet<(u32, u64)> = HashSet::new();
+    let mut batch: Vec<LinkEntry> = Vec::with_capacity(SCAN_BATCH_SIZE);
 
     for item in WalkDir::new(root_path)
         .follow_links(false)
@@ -595,28 +674,46 @@ where
                 .unwrap_or_default();
             let link_type = map_symlink_type(&path, &target);
 
-            entries.push(LinkEntry {
+            let entry = LinkEntry {
                 path: path.to_string_lossy().to_string(),
                 target,
                 link_type,
                 status: LinkStatus::Ok,
-            });
+            };
+            batch.push(entry.clone());
+            entries.push(entry);
 
             found += 1;
-        } else if !metadata.is_dir() && has_multiple_hardlinks(&path) {
-            entries.push(LinkEntry {
-                path: path.to_string_lossy().to_string(),
-                target: find_hardlink_target(&path),
-                link_type: LinkType::Hardlink,
-                status: LinkStatus::Ok,
-            });
+        } else if !metadata.is_dir() {
+            let path_text = path.to_string_lossy().to_string();
 
-            found += 1;
+            if let Ok((volume_serial, file_index, links_count)) = get_hardlink_info(&path_text) {
+                if links_count > 1 && seen_hardlinks.insert((volume_serial, file_index)) {
+                    let entry = LinkEntry {
+                        path: path_text.clone(),
+                        target: find_hardlink_target(&path),
+                        link_type: LinkType::Hardlink,
+                        status: LinkStatus::Ok,
+                    };
+                    batch.push(entry.clone());
+                    entries.push(entry);
+
+                    found += 1;
+                }
+            }
+        }
+
+        if batch.len() >= SCAN_BATCH_SIZE {
+            on_batch(std::mem::take(&mut batch));
         }
 
         if scanned % 500 == 0 {
             on_progress(scanned, found, &path);
         }
+    }
+
+    if !batch.is_empty() {
+        on_batch(batch);
     }
 
     entries
@@ -630,12 +727,17 @@ pub fn scan_path_with_walkdir_for_tests(path: &str) -> Result<Vec<LinkEntry>, St
         return Err(format!("Path does not exist: {path}"));
     }
 
-    Ok(collect_walkdir_entries(&root_path, &[], |_scanned, _found, _current_path| {}))
+    Ok(collect_walkdir_entries(
+        &root_path,
+        &[],
+        |_scanned, _found, _current_path| {},
+        |_batch| {},
+    ))
 }
 
 fn scan_with_walkdir(drive: &str, app: &AppHandle) -> Result<Vec<LinkEntry>, String> {
     let config = load_config()?;
-    let root = normalize_drive(drive);
+    let root = normalize_drive(drive)?;
     let root_path = PathBuf::from(&root);
 
     if !root_path.exists() {
@@ -655,14 +757,18 @@ fn scan_with_walkdir(drive: &str, app: &AppHandle) -> Result<Vec<LinkEntry>, Str
                 },
             );
         },
+        |batch| {
+            let _ = app.emit("scan:batch", ScanBatch { entries: batch });
+        },
     );
 
     Ok(entries)
 }
 
 #[tauri::command]
-pub async fn scan_volume(drive: String, app: AppHandle) -> Result<Vec<LinkEntry>, String> {
-    let drive_for_scan = drive.clone();
+pub async fn scan_volume(drive: String, app: AppHandle) -> Result<ScanResult, String> {
+    let normalized_drive = normalize_drive(&drive)?;
+    let drive_for_scan = normalized_drive.clone();
     let app_for_scan = app.clone();
 
     let try_usn = tokio::task::spawn_blocking(move || scan_with_usn(&drive_for_scan, &app_for_scan))
@@ -670,12 +776,53 @@ pub async fn scan_volume(drive: String, app: AppHandle) -> Result<Vec<LinkEntry>
         .map_err(|e| format!("USN task join error: {e}"))?;
 
     match try_usn {
-        Ok(entries) => Ok(entries),
+        Ok(entries) => Ok(ScanResult {
+            entries,
+            mode: ScanMode::UsnJournal,
+        }),
         Err(_) => {
-            let drive_fallback = drive;
-            tokio::task::spawn_blocking(move || scan_with_walkdir(&drive_fallback, &app))
+            let drive_fallback = normalized_drive;
+            let entries = tokio::task::spawn_blocking(move || scan_with_walkdir(&drive_fallback, &app))
                 .await
-                .map_err(|e| format!("walkdir task join error: {e}"))?
+                .map_err(|e| format!("walkdir task join error: {e}"))??;
+
+            Ok(ScanResult {
+                entries,
+                mode: ScanMode::WalkdirFallback,
+            })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_drive, should_exclude};
+    use std::path::Path;
+
+    #[test]
+    fn normalize_drive_accepts_expected_forms() {
+        assert_eq!(normalize_drive("c:").unwrap(), "C:\\");
+        assert_eq!(normalize_drive("D:\\").unwrap(), "D:\\");
+        assert_eq!(normalize_drive(" e:/ ").unwrap(), "E:\\");
+    }
+
+    #[test]
+    fn normalize_drive_rejects_unsafe_forms() {
+        assert!(normalize_drive("C:\\Windows").is_err());
+        assert!(normalize_drive("..\\").is_err());
+        assert!(normalize_drive("\\\\.\\PhysicalDrive0").is_err());
+    }
+
+    #[test]
+    fn exclude_prefix_must_match_path_boundary() {
+        assert!(should_exclude(
+            Path::new("C:\\data\\archive\\item.txt"),
+            &["C:\\data\\archive".to_string()]
+        ));
+
+        assert!(!should_exclude(
+            Path::new("C:\\data\\archives\\item.txt"),
+            &["C:\\data\\archive".to_string()]
+        ));
     }
 }

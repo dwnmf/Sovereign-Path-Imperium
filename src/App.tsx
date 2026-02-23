@@ -44,9 +44,17 @@ function useElementSize<T extends HTMLElement>() {
       })
     }
 
+    update()
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', update)
+      return () => {
+        window.removeEventListener('resize', update)
+      }
+    }
+
     const observer = new ResizeObserver(update)
     observer.observe(node)
-    update()
 
     return () => {
       observer.disconnect()
@@ -70,9 +78,11 @@ function App() {
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('All')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('All')
 
-  const [details, setDetails] = useState<LinkDetails | null>(null)
-  const [detailsLoading, setDetailsLoading] = useState(false)
-  const [detailsError, setDetailsError] = useState('')
+  const [detailsResult, setDetailsResult] = useState<{
+    path: string
+    details: LinkDetails | null
+    error: string
+  } | null>(null)
   const [showCreate, setShowCreate] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
@@ -92,38 +102,43 @@ function App() {
       .catch(() => setShellRegistered(false))
   }, [])
 
+  const selectedPath = links.selectedEntry?.path
+
   useEffect(() => {
-    if (!links.selectedEntry) {
-      setDetailsLoading(false)
-      setDetailsError('')
-      setDetails(null)
+    if (!selectedPath) {
       return
     }
 
     let cancelled = false
-    setDetailsLoading(true)
-    setDetailsError('')
 
-    apiGetLinkDetails(links.selectedEntry.path)
+    apiGetLinkDetails(selectedPath)
       .then((payload) => {
         if (!cancelled) {
-          setDetails(payload)
-          setDetailsError('')
-          setDetailsLoading(false)
+          setDetailsResult({
+            path: selectedPath,
+            details: payload,
+            error: '',
+          })
         }
       })
       .catch((error) => {
         if (!cancelled) {
-          setDetails(null)
-          setDetailsError(error instanceof Error ? error.message : 'Unable to load details')
-          setDetailsLoading(false)
+          setDetailsResult({
+            path: selectedPath,
+            details: null,
+            error: error instanceof Error ? error.message : 'Unable to load details',
+          })
         }
       })
 
     return () => {
       cancelled = true
     }
-  }, [links.selectedEntry])
+  }, [selectedPath])
+
+  const details = selectedPath && detailsResult?.path === selectedPath ? detailsResult.details : null
+  const detailsError = selectedPath && detailsResult?.path === selectedPath ? detailsResult.error : ''
+  const detailsLoading = Boolean(selectedPath) && (!detailsResult || detailsResult.path !== selectedPath)
 
   const scanSummary = useMemo(() => {
     if (scan.isScanning) {
@@ -139,6 +154,33 @@ function App() {
 
     return `${scan.entries.length.toLocaleString()} links · ${scan.currentVolume} · ${scan.scanMethod}`
   }, [scan.currentVolume, scan.entries.length, scan.isScanning, scan.scanMethod, scan.scanProgress])
+
+  const scanEngineLabel = useMemo(() => {
+    if (scan.isScanning && scan.scanMethod === 'No scan yet') {
+      return 'Verifying scan engine...'
+    }
+
+    if (scan.scanMode === 'UsnJournal') {
+      return 'FAST · USN Journal (Everything-style)'
+    }
+
+    if (scan.scanMethod === 'No scan yet' && scan.isElevated) {
+      return 'FAST available · run scan to verify'
+    }
+
+    if (scan.scanMethod === 'No scan yet' && !scan.isElevated) {
+      return 'COMPAT · Admin needed for FAST'
+    }
+
+    if (scan.isElevated) {
+      return 'COMPAT · USN failed, walkdir fallback'
+    }
+
+    return 'COMPAT · walkdir (no admin)'
+  }, [scan.isElevated, scan.isScanning, scan.scanMethod, scan.scanMode])
+
+  const fastScanActive = scan.scanMode === 'UsnJournal'
+  const registryCount = links.filtered.length
 
   return (
     <div className="appRoot">
@@ -159,6 +201,8 @@ function App() {
         statusFilter={statusFilter}
         isScanning={scan.isScanning}
         scanSummary={scanSummary}
+        scanEngineLabel={scanEngineLabel}
+        scanEngineFast={fastScanActive}
         onVolumeChange={(value) => {
           void scan.runScan(value)
         }}
@@ -188,7 +232,7 @@ function App() {
                 {scan.currentVolume} · {typeFilter} · {statusFilter}
               </div>
             </div>
-            <div className="panelHeaderValue">{links.filtered.length.toLocaleString()}</div>
+            <div className="panelHeaderValue">{registryCount.toLocaleString()}</div>
           </div>
           <div className="listViewport" ref={listRef}>
             {listSize.height > 0 && listSize.width > 0 ? (
@@ -220,8 +264,8 @@ function App() {
           </div>
           {detailsError ? <div className="inlineError inlineError--margined">{detailsError}</div> : null}
           <DetailPanel
-            details={links.selectedEntry ? details : null}
-            loading={Boolean(links.selectedEntry) && detailsLoading}
+            details={details}
+            loading={detailsLoading}
             canUndo={Boolean(history.items[0] && history.items[0].action_type !== 'Undo')}
             onOpenTarget={(target) => {
               void apiOpenTarget(target)
@@ -249,6 +293,8 @@ function App() {
       </main>
 
       <StatusBar
+        symlinks={links.stats.symlinks}
+        hardlinks={links.stats.hardlinks}
         working={links.stats.working}
         broken={links.stats.broken}
         junctions={links.stats.junctions}
@@ -257,6 +303,7 @@ function App() {
         scanning={scan.isScanning}
         volume={scan.currentVolume}
         method={scan.scanMethod}
+        fastMode={fastScanActive}
       />
 
       <CreateModal
@@ -265,7 +312,7 @@ function App() {
         onClose={() => setShowCreate(false)}
         onSubmit={async ({ linkPath, targetPath, linkType, targetIsDir }) => {
           await apiCreateLink({ linkPath, targetPath, linkType, targetIsDir })
-          await scan.runScan(scan.currentVolume)
+          void scan.runScan(scan.currentVolume)
         }}
       />
 

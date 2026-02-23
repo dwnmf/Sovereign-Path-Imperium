@@ -1,9 +1,11 @@
 export type LinkType = 'Symlink' | 'Junction' | 'Hardlink'
 export type LinkStatus = 'Ok' | 'Broken' | 'AccessDenied'
 export type ObjectType = 'File' | 'Directory'
+export type ScanMode = 'UsnJournal' | 'WalkdirFallback'
 export type TypeFilter = 'All' | LinkType
 export type StatusFilter = 'All' | 'Working' | 'Broken' | 'AccessDenied'
 export type ExportFormat = 'Csv' | 'Json'
+export type ActionType = 'Create' | 'Delete' | 'Retarget' | 'Undo'
 
 export interface LinkEntry {
   path: string
@@ -29,6 +31,15 @@ export interface ScanProgress {
   scanned: number
   found: number
   current_path: string
+}
+
+export interface ScanBatch {
+  entries: LinkEntry[]
+}
+
+export interface ScanResult {
+  entries: LinkEntry[]
+  mode: ScanMode
 }
 
 export interface VolumeInfo {
@@ -57,12 +68,12 @@ export interface Config {
 
 export interface ActionRecord {
   id: number
-  action_type: string
+  action_type: ActionType
   link_path: string
   link_type: LinkType
-  target_old?: string | null
-  target_new?: string | null
+  target_old: string | null
+  target_new: string | null
   timestamp: string
   success: boolean
-  error_msg?: string | null
+  error_msg: string | null
 }

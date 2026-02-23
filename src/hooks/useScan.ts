@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   apiIsElevated,
   apiListVolumes,
@@ -6,14 +6,17 @@ import {
   apiSaveConfig,
   apiScanVolume,
   apiValidateLinks,
+  isAbortError,
+  listenScanBatch,
   listenScanProgress,
 } from '../lib/tauriBridge'
-import type { Config, LinkEntry, ScanProgress, VolumeInfo } from '../types'
+import type { Config, LinkEntry, ScanMode, ScanProgress, VolumeInfo } from '../types'
 
 interface ScanState {
   entries: LinkEntry[]
   volumes: VolumeInfo[]
   currentVolume: string
+  scanMode: ScanMode
   scanMethod: string
   scanProgress: ScanProgress | null
   isScanning: boolean
@@ -22,14 +25,32 @@ interface ScanState {
   error: string
 }
 
-const FALLBACK_SCAN_METHOD = 'walkdir fallback'
+const INITIAL_SCAN_METHOD = 'No scan yet'
+const SCAN_BATCH_FLUSH_MS = 200
+
+function describeScanMode(mode: ScanMode): string {
+  if (mode === 'UsnJournal') {
+    return 'FAST · USN Journal (Everything-style)'
+  }
+
+  return 'COMPAT · walkdir fallback'
+}
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message
+  }
+
+  return fallback
+}
 
 export function useScan() {
   const [state, setState] = useState<ScanState>({
     entries: [],
     volumes: [],
     currentVolume: 'C:',
-    scanMethod: FALLBACK_SCAN_METHOD,
+    scanMode: 'WalkdirFallback',
+    scanMethod: INITIAL_SCAN_METHOD,
     scanProgress: null,
     isScanning: false,
     isElevated: false,
@@ -37,32 +58,144 @@ export function useScan() {
     error: '',
   })
 
-  useEffect(() => {
-    let unlisten: (() => void) | null = null
+  const mountedRef = useRef(true)
+  const activeScanRef = useRef<{ id: number; controller: AbortController } | null>(null)
+  const scanSequenceRef = useRef(0)
+  const reloadSequenceRef = useRef(0)
+  const pendingBatchEntriesRef = useRef<LinkEntry[]>([])
+  const batchFlushTimerRef = useRef<number | null>(null)
 
-    listenScanProgress((progress) => {
-      setState((previous) => ({
-        ...previous,
-        scanProgress: progress,
-      }))
-    })
-      .then((listener) => {
-        unlisten = listener
-      })
-      .catch(() => {
-        unlisten = null
-      })
-
-    return () => {
-      if (unlisten) {
-        unlisten()
-      }
+  const clearBatchFlushTimer = useCallback(() => {
+    if (batchFlushTimerRef.current !== null) {
+      window.clearTimeout(batchFlushTimerRef.current)
+      batchFlushTimerRef.current = null
     }
   }, [])
 
+  const flushBatchEntries = useCallback(() => {
+    if (!mountedRef.current || pendingBatchEntriesRef.current.length === 0) {
+      return
+    }
+
+    const chunk = pendingBatchEntriesRef.current
+    pendingBatchEntriesRef.current = []
+
+    setState((previous) => {
+      if (!previous.isScanning) {
+        return previous
+      }
+
+      return {
+        ...previous,
+        entries: [...previous.entries, ...chunk],
+      }
+    })
+  }, [])
+
+  const scheduleBatchFlush = useCallback(() => {
+    if (batchFlushTimerRef.current !== null) {
+      return
+    }
+
+    batchFlushTimerRef.current = window.setTimeout(() => {
+      batchFlushTimerRef.current = null
+      flushBatchEntries()
+    }, SCAN_BATCH_FLUSH_MS)
+  }, [flushBatchEntries])
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false
+      activeScanRef.current?.controller.abort()
+      activeScanRef.current = null
+      clearBatchFlushTimer()
+      pendingBatchEntriesRef.current = []
+    }
+  }, [clearBatchFlushTimer])
+
+  useEffect(() => {
+    const listenerController = new AbortController()
+
+    void listenScanProgress(
+      (progress) => {
+        if (!mountedRef.current || !activeScanRef.current) {
+          return
+        }
+
+        setState((previous) => {
+          if (!previous.isScanning) {
+            return previous
+          }
+
+          return {
+            ...previous,
+            scanProgress: progress,
+          }
+        })
+      },
+      { signal: listenerController.signal },
+    ).catch((error) => {
+      if (!mountedRef.current || isAbortError(error)) {
+        return
+      }
+
+      setState((previous) => ({
+        ...previous,
+        error: getErrorMessage(error, 'Unable to subscribe to scan progress'),
+      }))
+    })
+
+    return () => {
+      listenerController.abort()
+    }
+  }, [])
+
+  useEffect(() => {
+    const listenerController = new AbortController()
+
+    void listenScanBatch(
+      (batch) => {
+        if (!mountedRef.current || !activeScanRef.current || batch.entries.length === 0) {
+          return
+        }
+
+        pendingBatchEntriesRef.current.push(...batch.entries)
+        scheduleBatchFlush()
+      },
+      { signal: listenerController.signal },
+    ).catch((error) => {
+      if (!mountedRef.current || isAbortError(error)) {
+        return
+      }
+
+      setState((previous) => ({
+        ...previous,
+        error: getErrorMessage(error, 'Unable to subscribe to scan batch stream'),
+      }))
+    })
+
+    return () => {
+      listenerController.abort()
+    }
+  }, [scheduleBatchFlush])
+
   const runScan = useCallback(async (volume: string) => {
+    if (!mountedRef.current) {
+      return
+    }
+
+    const previousScan = activeScanRef.current
+    const controller = new AbortController()
+    const scanId = scanSequenceRef.current + 1
+    scanSequenceRef.current = scanId
+    activeScanRef.current = { id: scanId, controller }
+    previousScan?.controller.abort()
+    clearBatchFlushTimer()
+    pendingBatchEntriesRef.current = []
+
     setState((previous) => ({
       ...previous,
+      entries: [],
       currentVolume: volume,
       isScanning: true,
       error: '',
@@ -70,35 +203,71 @@ export function useScan() {
     }))
 
     try {
-      const scanned = await apiScanVolume(volume)
-      const validated = await apiValidateLinks(scanned)
+      const scanned = await apiScanVolume(volume, { signal: controller.signal })
+      const validated = await apiValidateLinks(scanned.entries, { signal: controller.signal })
 
+      if (!mountedRef.current) {
+        return
+      }
+
+      if (activeScanRef.current?.id !== scanId || controller.signal.aborted) {
+        return
+      }
+
+      clearBatchFlushTimer()
+      pendingBatchEntriesRef.current = []
       setState((previous) => ({
         ...previous,
         entries: validated,
         currentVolume: volume,
-        scanMethod: previous.isElevated ? 'USN Journal / walkdir fallback' : FALLBACK_SCAN_METHOD,
+        scanMode: scanned.mode,
+        scanMethod: describeScanMode(scanned.mode),
+        error: '',
       }))
     } catch (error) {
+      if (!mountedRef.current) {
+        return
+      }
+
+      if (activeScanRef.current?.id !== scanId || isAbortError(error)) {
+        return
+      }
+
+      clearBatchFlushTimer()
+      pendingBatchEntriesRef.current = []
       setState((previous) => ({
         ...previous,
-        error: error instanceof Error ? error.message : 'Scan failed',
+        error: getErrorMessage(error, 'Scan failed'),
       }))
     } finally {
-      setState((previous) => ({
-        ...previous,
-        isScanning: false,
-      }))
+      if (mountedRef.current && activeScanRef.current?.id === scanId) {
+        clearBatchFlushTimer()
+        flushBatchEntries()
+        activeScanRef.current = null
+        pendingBatchEntriesRef.current = []
+
+        setState((previous) => ({
+          ...previous,
+          isScanning: false,
+        }))
+      }
     }
-  }, [])
+  }, [clearBatchFlushTimer, flushBatchEntries])
 
   const reloadConfig = useCallback(async () => {
+    const reloadId = reloadSequenceRef.current + 1
+    reloadSequenceRef.current = reloadId
+
     try {
       const [volumes, isElevated, config] = await Promise.all([
         apiListVolumes(),
         apiIsElevated(),
         apiLoadConfig(),
       ])
+
+      if (!mountedRef.current || reloadSequenceRef.current !== reloadId) {
+        return
+      }
 
       const currentVolume = config.scan.default_volume || volumes[0]?.letter || 'C:'
 
@@ -108,16 +277,20 @@ export function useScan() {
         isElevated,
         config,
         currentVolume,
-        scanMethod: isElevated ? 'USN Journal / walkdir fallback' : FALLBACK_SCAN_METHOD,
+        error: '',
       }))
 
       if (config.scan.auto_scan_on_start) {
         await runScan(currentVolume)
       }
     } catch (error) {
+      if (!mountedRef.current || reloadSequenceRef.current !== reloadId) {
+        return
+      }
+
       setState((previous) => ({
         ...previous,
-        error: error instanceof Error ? error.message : 'Unable to load startup state',
+        error: getErrorMessage(error, 'Unable to load startup state'),
       }))
     }
   }, [runScan])
@@ -127,8 +300,28 @@ export function useScan() {
   }, [reloadConfig])
 
   const saveConfig = useCallback(async (config: Config) => {
-    setState((previous) => ({ ...previous, config }))
-    await apiSaveConfig(config)
+    try {
+      await apiSaveConfig(config)
+
+      if (!mountedRef.current) {
+        return
+      }
+
+      setState((previous) => ({
+        ...previous,
+        config,
+        error: '',
+      }))
+    } catch (error) {
+      if (!mountedRef.current) {
+        return
+      }
+
+      setState((previous) => ({
+        ...previous,
+        error: getErrorMessage(error, 'Unable to save configuration'),
+      }))
+    }
   }, [])
 
   const volumeLabel = useMemo(() => {

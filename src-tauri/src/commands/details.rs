@@ -60,19 +60,33 @@ fn resolve_target(path: &str, stored_target: &str) -> String {
             .join(stored_path)
     };
 
-    absolute
-        .canonicalize()
-        .unwrap_or(absolute)
-        .to_string_lossy()
-        .to_string()
+    let resolved = absolute.canonicalize().unwrap_or(absolute);
+    normalize_display_path(&resolved)
+}
+
+fn normalize_display_path(path: &Path) -> String {
+    let value = path.to_string_lossy().to_string();
+
+    #[cfg(windows)]
+    {
+        if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{rest}");
+        }
+
+        if let Some(rest) = value.strip_prefix(r"\\?\") {
+            return rest.to_string();
+        }
+    }
+
+    value
 }
 
 fn resolve_owner(path: &str) -> String {
-    let escaped = path.replace('"', "``\"");
-    let script = format!("(Get-Acl -LiteralPath \"{escaped}\").Owner");
+    let script = "(Get-Acl -LiteralPath $args[0]).Owner";
 
     let output = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .arg(path)
         .output();
 
     match output {

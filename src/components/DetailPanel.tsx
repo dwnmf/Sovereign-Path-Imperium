@@ -1,13 +1,13 @@
 import { ArrowSquareOut, ArrowsCounterClockwise, PencilSimpleLine, Trash } from '@phosphor-icons/react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { LinkDetails } from '../types'
 
 interface DetailPanelProps {
   details: LinkDetails | null
   loading: boolean
   canUndo: boolean
-  onOpenTarget: (target: string) => void
-  onDelete: (path: string) => void
+  onOpenTarget: (target: string) => void | Promise<void>
+  onDelete: (path: string) => void | Promise<void>
   onRetarget: (path: string, target: string) => Promise<void>
   onUndo: () => Promise<void>
 }
@@ -57,6 +57,30 @@ function diffSegments(a: string, b: string): { shared: string; tailA: string; ta
   }
 }
 
+function normalizePath(input: string): string {
+  return input.trim().replaceAll('/', '\\')
+}
+
+function isAbsoluteWindowsPath(path: string): boolean {
+  return /^[A-Za-z]:\\/.test(path)
+}
+
+function extractVolume(path: string): string {
+  return path.slice(0, 2).toUpperCase()
+}
+
+function getErrorMessage(value: unknown, fallback: string): string {
+  if (value instanceof Error && value.message.trim().length > 0) {
+    return value.message
+  }
+
+  if (typeof value === 'string' && value.trim().length > 0) {
+    return value
+  }
+
+  return fallback
+}
+
 export function DetailPanel({
   details,
   loading,
@@ -67,8 +91,10 @@ export function DetailPanel({
   onUndo,
 }: DetailPanelProps) {
   const [editMode, setEditMode] = useState(false)
+  const [editingPath, setEditingPath] = useState<string | null>(null)
   const [retargetValue, setRetargetValue] = useState('')
   const [busy, setBusy] = useState(false)
+  const [actionBusy, setActionBusy] = useState(false)
   const [error, setError] = useState('')
 
   const diff = useMemo(() => {
@@ -78,6 +104,14 @@ export function DetailPanel({
 
     return diffSegments(details.target_stored, details.target_real)
   }, [details])
+
+  useEffect(() => {
+    setEditMode(false)
+    setEditingPath(null)
+    setRetargetValue('')
+    setBusy(false)
+    setError('')
+  }, [details?.path])
 
   if (loading) {
     return (
@@ -113,6 +147,24 @@ export function DetailPanel({
   }
 
   const sameTarget = details.target_stored === details.target_real
+  const attributes = Array.isArray(details.attributes) ? details.attributes : []
+
+  async function runAsyncAction(action: () => void | Promise<void>, fallback: string) {
+    if (busy || actionBusy) {
+      return
+    }
+
+    setActionBusy(true)
+    setError('')
+
+    try {
+      await action()
+    } catch (actionError) {
+      setError(getErrorMessage(actionError, fallback))
+    } finally {
+      setActionBusy(false)
+    }
+  }
 
   return (
     <div className="detailPanel">
@@ -180,11 +232,12 @@ export function DetailPanel({
         <div className="detailRow detailRow--attributes">
           <span className="detailKey">Attributes</span>
           <span className="attributeList">
-            {details.attributes.map((attribute) => (
+            {attributes.map((attribute) => (
               <span className="attributeTag" key={attribute}>
                 {attribute}
               </span>
             ))}
+            {attributes.length === 0 ? <span className="attributeTag">-</span> : null}
           </span>
         </div>
       </div>
@@ -192,22 +245,63 @@ export function DetailPanel({
       {editMode ? (
         <div className="retargetInline">
           <input
+            disabled={busy}
             value={retargetValue}
             onChange={(event) => setRetargetValue(event.target.value)}
             placeholder="New target path"
           />
           <button
             className="button button--primary"
-            disabled={busy || retargetValue.trim().length === 0}
+            disabled={busy || actionBusy || retargetValue.trim().length === 0}
             onClick={async () => {
+              const pathToRetarget = editingPath ?? details.path
+              const normalizedTarget = normalizePath(retargetValue)
+
+              if (!pathToRetarget) {
+                setError('No link selected for retarget.')
+                return
+              }
+
+              if (!normalizedTarget) {
+                setError('Target path is required.')
+                return
+              }
+
+              if (normalizePath(pathToRetarget).toLowerCase() === normalizedTarget.toLowerCase()) {
+                setError('Target path must be different from the link path.')
+                return
+              }
+
+              if (details.link_type === 'Junction' && !isAbsoluteWindowsPath(normalizedTarget)) {
+                setError('Junction target must be an absolute path.')
+                return
+              }
+
+              if (details.link_type === 'Hardlink') {
+                if (!isAbsoluteWindowsPath(normalizedTarget)) {
+                  setError('Hardlink target must be an absolute file path.')
+                  return
+                }
+
+                const normalizedLinkPath = normalizePath(pathToRetarget)
+                if (
+                  isAbsoluteWindowsPath(normalizedLinkPath) &&
+                  extractVolume(normalizedLinkPath) !== extractVolume(normalizedTarget)
+                ) {
+                  setError('Hardlink requires source and target to be on the same volume.')
+                  return
+                }
+              }
+
               setBusy(true)
               setError('')
               try {
-                await onRetarget(details.path, retargetValue)
+                await onRetarget(pathToRetarget, normalizedTarget)
                 setEditMode(false)
+                setEditingPath(null)
                 setRetargetValue('')
               } catch (retargetError) {
-                setError(retargetError instanceof Error ? retargetError.message : 'Retarget failed')
+                setError(getErrorMessage(retargetError, 'Retarget failed'))
               } finally {
                 setBusy(false)
               }
@@ -218,8 +312,10 @@ export function DetailPanel({
           </button>
           <button
             className="button"
+            disabled={busy}
             onClick={() => {
               setEditMode(false)
+              setEditingPath(null)
               setRetargetValue('')
             }}
             type="button"
@@ -232,14 +328,24 @@ export function DetailPanel({
       {error ? <div className="inlineError">{error}</div> : null}
 
       <div className="detailActions">
-        <button className="button button--icon" onClick={() => onOpenTarget(details.target_real)} type="button">
+        <button
+          className="button button--icon"
+          disabled={busy || actionBusy}
+          onClick={() =>
+            void runAsyncAction(() => onOpenTarget(details.target_real), 'Unable to open target')
+          }
+          type="button"
+        >
           <ArrowSquareOut size={ICON_SIZE} weight="duotone" />
           Open target
         </button>
         <button
           className="button button--icon"
+          disabled={busy || actionBusy}
           onClick={() => {
             setRetargetValue(details.target_stored)
+            setEditingPath(details.path)
+            setError('')
             setEditMode(true)
           }}
           type="button"
@@ -247,12 +353,22 @@ export function DetailPanel({
           <PencilSimpleLine size={ICON_SIZE} weight="duotone" />
           Retarget
         </button>
-        <button className="button button--danger button--icon" onClick={() => onDelete(details.path)} type="button">
+        <button
+          className="button button--danger button--icon"
+          disabled={busy || actionBusy}
+          onClick={() => void runAsyncAction(() => onDelete(details.path), 'Delete failed')}
+          type="button"
+        >
           <Trash size={ICON_SIZE} weight="duotone" />
           Delete
         </button>
         {canUndo ? (
-          <button className="button button--icon" onClick={() => void onUndo()} type="button">
+          <button
+            className="button button--icon"
+            disabled={busy || actionBusy}
+            onClick={() => void runAsyncAction(() => onUndo(), 'Undo failed')}
+            type="button"
+          >
             <ArrowsCounterClockwise size={ICON_SIZE} weight="duotone" />
             Undo
           </button>

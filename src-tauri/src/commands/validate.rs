@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -27,6 +28,13 @@ fn classify_error(error: std::io::Error) -> LinkStatus {
 }
 
 async fn validate_one(entry: LinkEntry) -> LinkEntry {
+    if entry.target.trim().is_empty() {
+        return LinkEntry {
+            status: LinkStatus::Broken("target path is empty".to_string()),
+            ..entry
+        };
+    }
+
     let path = resolve_target(&entry.path, &entry.target);
 
     let check = tokio::time::timeout(
@@ -54,11 +62,14 @@ pub async fn validate_links(entries: Vec<LinkEntry>) -> Vec<LinkEntry> {
     let mut pending: Vec<LinkEntry> = entries;
     let mut join_set = JoinSet::new();
     let mut validated: Vec<LinkEntry> = Vec::new();
+    let mut inflight: HashMap<tokio::task::Id, LinkEntry> = HashMap::new();
 
     loop {
         while join_set.len() < 16 {
             if let Some(entry) = pending.pop() {
-                join_set.spawn(validate_one(entry));
+                let fallback = entry.clone();
+                let task = join_set.spawn(validate_one(entry));
+                inflight.insert(task.id(), fallback);
             } else {
                 break;
             }
@@ -68,16 +79,24 @@ pub async fn validate_links(entries: Vec<LinkEntry>) -> Vec<LinkEntry> {
             break;
         }
 
-        if let Some(result) = join_set.join_next().await {
+        if let Some(result) = join_set.join_next_with_id().await {
             match result {
-                Ok(entry) => validated.push(entry),
+                Ok((task_id, entry)) => {
+                    inflight.remove(&task_id);
+                    validated.push(entry);
+                }
                 Err(error) => {
-                    validated.push(LinkEntry {
-                        path: "<unknown>".to_string(),
-                        target: "".to_string(),
-                        link_type: crate::types::LinkType::Symlink,
-                        status: LinkStatus::Broken(format!("validation worker crashed: {error}")),
-                    });
+                    if let Some(mut entry) = inflight.remove(&error.id()) {
+                        entry.status = LinkStatus::Broken(format!("validation worker crashed: {error}"));
+                        validated.push(entry);
+                    } else {
+                        validated.push(LinkEntry {
+                            path: "<unknown>".to_string(),
+                            target: "".to_string(),
+                            link_type: crate::types::LinkType::Symlink,
+                            status: LinkStatus::Broken(format!("validation worker crashed: {error}")),
+                        });
+                    }
                 }
             }
         }
@@ -105,5 +124,18 @@ mod tests {
         match validated.status {
             LinkStatus::Broken(_) | LinkStatus::AccessDenied | LinkStatus::Ok => {}
         }
+    }
+
+    #[tokio::test]
+    async fn empty_target_is_broken() {
+        let entry = LinkEntry {
+            path: "C:\\tmp\\link".to_string(),
+            target: "".to_string(),
+            link_type: crate::types::LinkType::Symlink,
+            status: LinkStatus::Ok,
+        };
+
+        let validated = validate_one(entry).await;
+        assert!(matches!(validated.status, LinkStatus::Broken(_)));
     }
 }

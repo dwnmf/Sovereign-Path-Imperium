@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { LinkType } from '../types'
 
 interface CreateModalProps {
@@ -17,6 +17,10 @@ function normalizePath(input: string): string {
   return input.trim().replaceAll('/', '\\')
 }
 
+function isAbsoluteWindowsPath(path: string): boolean {
+  return /^[A-Za-z]:\\/.test(path)
+}
+
 function extractVolume(path: string): string {
   return path.slice(0, 2).toUpperCase()
 }
@@ -29,13 +33,24 @@ export function CreateModal({ open, existingPaths, onClose, onSubmit }: CreateMo
   const [isSaving, setIsSaving] = useState(false)
   const [error, setError] = useState('')
 
+  useEffect(() => {
+    if (!open && !isSaving) {
+      setLinkPath('')
+      setTargetPath('')
+      setLinkType('Symlink')
+      setTargetIsDir(false)
+      setError('')
+    }
+  }, [open, isSaving])
+
   const warning = useMemo(() => {
+    const normalizedLink = normalizePath(linkPath)
     const normalizedTarget = normalizePath(targetPath)
 
     if (linkType === 'Hardlink') {
       const sameVolume =
-        normalizePath(linkPath).length >= 2 && normalizedTarget.length >= 2
-          ? extractVolume(linkPath) === extractVolume(normalizedTarget)
+        normalizedLink.length >= 2 && normalizedTarget.length >= 2
+          ? extractVolume(normalizedLink) === extractVolume(normalizedTarget)
           : true
 
       if (!sameVolume) {
@@ -55,7 +70,15 @@ export function CreateModal({ open, existingPaths, onClose, onSubmit }: CreateMo
   }
 
   return (
-    <div className="modalOverlay" onClick={onClose} role="presentation">
+    <div
+      className="modalOverlay"
+      onClick={() => {
+        if (!isSaving) {
+          onClose()
+        }
+      }}
+      role="presentation"
+    >
       <div className="modalCard" onClick={(event) => event.stopPropagation()}>
         <h3>Create Link</h3>
 
@@ -63,9 +86,14 @@ export function CreateModal({ open, existingPaths, onClose, onSubmit }: CreateMo
           <span className="fieldLabel">Link path</span>
           <span className="fieldHint">Absolute path where the link will be created.</span>
           <div className="inputWithButton">
-            <input value={linkPath} onChange={(event) => setLinkPath(event.target.value)} />
+            <input
+              disabled={isSaving}
+              value={linkPath}
+              onChange={(event) => setLinkPath(event.target.value)}
+            />
             <button
               className="button"
+              disabled={isSaving}
               type="button"
               onClick={() => {
                 const value = window.prompt('Enter link path', linkPath)
@@ -83,9 +111,14 @@ export function CreateModal({ open, existingPaths, onClose, onSubmit }: CreateMo
           <span className="fieldLabel">Target path</span>
           <span className="fieldHint">Resolved destination for the link pointer.</span>
           <div className="inputWithButton">
-            <input value={targetPath} onChange={(event) => setTargetPath(event.target.value)} />
+            <input
+              disabled={isSaving}
+              value={targetPath}
+              onChange={(event) => setTargetPath(event.target.value)}
+            />
             <button
               className="button"
+              disabled={isSaving}
               type="button"
               onClick={() => {
                 const value = window.prompt('Enter target path', targetPath)
@@ -105,6 +138,7 @@ export function CreateModal({ open, existingPaths, onClose, onSubmit }: CreateMo
             <label key={value}>
               <input
                 checked={linkType === value}
+                disabled={isSaving}
                 name="linkType"
                 onChange={() => setLinkType(value)}
                 type="radio"
@@ -118,6 +152,7 @@ export function CreateModal({ open, existingPaths, onClose, onSubmit }: CreateMo
           <label className="checkboxRow">
             <input
               checked={targetIsDir}
+              disabled={isSaving}
               onChange={(event) => setTargetIsDir(event.target.checked)}
               type="checkbox"
             />
@@ -129,7 +164,7 @@ export function CreateModal({ open, existingPaths, onClose, onSubmit }: CreateMo
         {error ? <div className="inlineError">{error}</div> : null}
 
         <div className="modalActions">
-          <button className="button" onClick={onClose} type="button">
+          <button className="button" disabled={isSaving} onClick={onClose} type="button">
             Cancel
           </button>
           <button
@@ -137,6 +172,10 @@ export function CreateModal({ open, existingPaths, onClose, onSubmit }: CreateMo
             disabled={isSaving}
             type="button"
             onClick={async () => {
+              if (isSaving) {
+                return
+              }
+
               const normalizedLink = normalizePath(linkPath)
               const normalizedTarget = normalizePath(targetPath)
 
@@ -152,6 +191,33 @@ export function CreateModal({ open, existingPaths, onClose, onSubmit }: CreateMo
                 return
               }
 
+              if (!isAbsoluteWindowsPath(normalizedLink)) {
+                setError('Link path must be an absolute path.')
+                return
+              }
+
+              if (normalizedLink.toLowerCase() === normalizedTarget.toLowerCase()) {
+                setError('Link path and target path must be different.')
+                return
+              }
+
+              if (linkType === 'Junction' && !isAbsoluteWindowsPath(normalizedTarget)) {
+                setError('Junction target must be an absolute path.')
+                return
+              }
+
+              if (linkType === 'Hardlink') {
+                if (!isAbsoluteWindowsPath(normalizedTarget)) {
+                  setError('Hardlink target must be an absolute file path.')
+                  return
+                }
+
+                if (extractVolume(normalizedLink) !== extractVolume(normalizedTarget)) {
+                  setError('Hardlink requires source and target to be on the same volume.')
+                  return
+                }
+              }
+
               if (existingPaths.has(normalizedLink.toLowerCase())) {
                 setError('Link path already exists in current dataset.')
                 return
@@ -164,7 +230,7 @@ export function CreateModal({ open, existingPaths, onClose, onSubmit }: CreateMo
                   linkPath: normalizedLink,
                   targetPath: normalizedTarget,
                   linkType,
-                  targetIsDir,
+                  targetIsDir: linkType === 'Symlink' ? targetIsDir : false,
                 })
 
                 setLinkPath('')
@@ -173,7 +239,18 @@ export function CreateModal({ open, existingPaths, onClose, onSubmit }: CreateMo
                 setTargetIsDir(false)
                 onClose()
               } catch (submitError) {
-                setError(submitError instanceof Error ? submitError.message : 'Creation failed')
+                const message =
+                  submitError instanceof Error
+                    ? submitError.message
+                    : typeof submitError === 'string'
+                      ? submitError
+                      : ''
+
+                setError(
+                  message && message !== '[object Object]'
+                    ? message
+                    : 'Creation failed. Run as Administrator or enable Windows Developer Mode for symlink creation.',
+                )
               } finally {
                 setIsSaving(false)
               }

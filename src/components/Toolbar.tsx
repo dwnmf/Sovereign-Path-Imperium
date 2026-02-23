@@ -4,6 +4,7 @@ import {
   FunnelSimple,
   GearSix,
   HardDrives,
+  Lightning,
   MagnifyingGlass,
   Plus,
   Pulse,
@@ -18,6 +19,8 @@ interface ToolbarProps {
   statusFilter: StatusFilter
   isScanning: boolean
   scanSummary: string
+  scanEngineLabel: string
+  scanEngineFast: boolean
   onVolumeChange: (value: string) => void
   onSearchChange: (value: string) => void
   onTypeFilterChange: (value: TypeFilter) => void
@@ -42,6 +45,8 @@ export function Toolbar({
   statusFilter,
   isScanning,
   scanSummary,
+  scanEngineLabel,
+  scanEngineFast,
   onVolumeChange,
   onSearchChange,
   onTypeFilterChange,
@@ -51,6 +56,8 @@ export function Toolbar({
   onOpenSettings,
   onExport,
 }: ToolbarProps) {
+  const canChangeVolume = volumes.length > 0 && !isScanning
+
   return (
     <div className="toolbar">
       <div className="toolbarLeft">
@@ -59,7 +66,11 @@ export function Toolbar({
             <HardDrives size={ICON_SIZE} weight="duotone" />
             Volume
           </span>
-          <select value={selectedVolume} onChange={(event) => onVolumeChange(event.target.value)}>
+          <select
+            value={selectedVolume}
+            onChange={(event) => onVolumeChange(event.target.value)}
+            disabled={!canChangeVolume}
+          >
             {volumes.map((volume) => (
               <option key={volume.letter} value={volume.letter}>
                 {volume.letter} ({volume.label}, {bytesToGb(volume.free_bytes)} free)
@@ -112,6 +123,11 @@ export function Toolbar({
       </div>
 
       <div className="toolbarRight">
+        <div className={`scanEngineBadge ${scanEngineFast ? 'scanEngineBadge--fast' : 'scanEngineBadge--compat'}`}>
+          <Lightning size={ICON_SIZE} weight="duotone" />
+          <span>{scanEngineLabel}</span>
+        </div>
+
         <button className="button button--primary button--icon" onClick={onOpenCreate} type="button">
           <Plus size={ICON_SIZE} weight="bold" />
           New Link
