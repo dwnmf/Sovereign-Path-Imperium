@@ -1,10 +1,8 @@
-import { CheckCircle, LockKey, WarningCircle } from '@phosphor-icons/react'
 import { List } from 'react-window'
 import type { RowComponentProps } from 'react-window'
 import type { LinkEntry } from '../types'
 
 const ROW_HEIGHT = 42
-const ICON_SIZE = 14
 const FixedSizeList = List
 
 interface LinkListProps {
@@ -36,18 +34,6 @@ function statusBadgeText(entry: LinkEntry): string {
   }
 
   return 'Ready'
-}
-
-function StatusIcon({ status }: { status: LinkEntry['status'] }) {
-  if (status === 'AccessDenied') {
-    return <LockKey size={ICON_SIZE} weight="duotone" />
-  }
-
-  if (status === 'Broken') {
-    return <WarningCircle size={ICON_SIZE} weight="duotone" />
-  }
-
-  return <CheckCircle size={ICON_SIZE} weight="duotone" />
 }
 
 function splitPath(path: string): { dir: string; name: string } {
@@ -108,7 +94,6 @@ function Row({
           className={`statusBadge statusBadge--${entry.status.toLowerCase()}`}
           aria-label={entry.status}
         >
-          <StatusIcon status={entry.status} />
           {statusBadgeText(entry)}
         </span>
       </button>

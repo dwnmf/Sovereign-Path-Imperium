@@ -1,4 +1,3 @@
-import { ArrowLeft, ArrowRight, ArrowsCounterClockwise, ClockCounterClockwise } from '@phosphor-icons/react'
 import type { ActionRecord } from '../types'
 
 interface HistoryPanelProps {
@@ -53,23 +52,19 @@ export function HistoryPanel({
   return (
     <aside className={`historyPanel ${open ? 'historyPanel--open' : ''}`}>
       <div className="historyHeader">
-        <h3>
-          <ClockCounterClockwise size={16} weight="duotone" />
-          History
-        </h3>
+        <h3>History</h3>
         <button className="button" onClick={onClose} type="button">
           Close
         </button>
       </div>
 
       <button
-        className="button button--icon"
+        className="button"
         disabled={!canUndo}
         title={undoTitle}
         onClick={onUndo}
         type="button"
       >
-        <ArrowsCounterClockwise size={16} weight="duotone" />
         Undo last action
       </button>
 
@@ -112,11 +107,10 @@ export function HistoryPanel({
           }}
           type="button"
         >
-          <ArrowLeft size={14} weight="bold" />
           Prev
         </button>
         <button
-          className="button button--icon"
+          className="button"
           disabled={!canPageNext}
           onClick={() => {
             if (!canPageNext) {
@@ -127,7 +121,6 @@ export function HistoryPanel({
           }}
           type="button"
         >
-          <ArrowRight size={14} weight="bold" />
           Next
         </button>
       </div>

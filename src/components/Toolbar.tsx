@@ -1,14 +1,3 @@
-import {
-  ClockCounterClockwise,
-  DownloadSimple,
-  FunnelSimple,
-  GearSix,
-  HardDrives,
-  Lightning,
-  MagnifyingGlass,
-  Plus,
-  Pulse,
-} from '@phosphor-icons/react'
 import type { ExportFormat, StatusFilter, TypeFilter, VolumeInfo } from '../types'
 
 interface ToolbarProps {
@@ -35,8 +24,6 @@ function bytesToGb(bytes: number): string {
   return `${Math.floor(bytes / 1_000_000_000)} GB`
 }
 
-const ICON_SIZE = 16
-
 export function Toolbar({
   volumes,
   selectedVolume,
@@ -62,10 +49,7 @@ export function Toolbar({
     <div className="toolbar">
       <div className="toolbarLeft">
         <label className="controlBlock controlBlock--volume">
-          <span className="controlLabel">
-            <HardDrives size={ICON_SIZE} weight="duotone" />
-            Volume
-          </span>
+          <span className="controlLabel">Volume</span>
           <select
             value={selectedVolume}
             onChange={(event) => onVolumeChange(event.target.value)}
@@ -80,10 +64,7 @@ export function Toolbar({
         </label>
 
         <label className="controlBlock controlBlock--search">
-          <span className="controlLabel">
-            <MagnifyingGlass size={ICON_SIZE} weight="duotone" />
-            Path query
-          </span>
+          <span className="controlLabel">Path query</span>
           <input
             placeholder="Search path or target"
             type="search"
@@ -93,10 +74,7 @@ export function Toolbar({
         </label>
 
         <label className="controlBlock">
-          <span className="controlLabel">
-            <FunnelSimple size={ICON_SIZE} weight="duotone" />
-            Type
-          </span>
+          <span className="controlLabel">Type</span>
           <select value={typeFilter} onChange={(event) => onTypeFilterChange(event.target.value as TypeFilter)}>
             <option value="All">All</option>
             <option value="Symlink">Symlink</option>
@@ -106,10 +84,7 @@ export function Toolbar({
         </label>
 
         <label className="controlBlock">
-          <span className="controlLabel">
-            <FunnelSimple size={ICON_SIZE} weight="duotone" />
-            Status
-          </span>
+          <span className="controlLabel">Status</span>
           <select
             value={statusFilter}
             onChange={(event) => onStatusFilterChange(event.target.value as StatusFilter)}
@@ -124,18 +99,15 @@ export function Toolbar({
 
       <div className="toolbarRight">
         <div className={`scanEngineBadge ${scanEngineFast ? 'scanEngineBadge--fast' : 'scanEngineBadge--compat'}`}>
-          <Lightning size={ICON_SIZE} weight="duotone" />
           <span>{scanEngineLabel}</span>
         </div>
 
         <button className="button button--primary button--icon" onClick={onOpenCreate} type="button">
-          <Plus size={ICON_SIZE} weight="bold" />
           New Link
         </button>
 
         <div className="menuButton">
           <button className="button button--icon" type="button">
-            <DownloadSimple size={ICON_SIZE} weight="duotone" />
             Export
           </button>
           <div className="menuContent">
@@ -149,23 +121,14 @@ export function Toolbar({
         </div>
 
         <button className="button button--icon" onClick={onOpenHistory} type="button">
-          <ClockCounterClockwise size={ICON_SIZE} weight="duotone" />
           History
         </button>
 
         <button className="button button--icon" onClick={onOpenSettings} type="button">
-          <GearSix size={ICON_SIZE} weight="duotone" />
           Settings
         </button>
 
         <div className="scanStatus">
-          {isScanning ? (
-            <span className="spinner" />
-          ) : (
-            <span className="scanStatusIcon">
-              <Pulse size={ICON_SIZE} weight="duotone" />
-            </span>
-          )}
           <span>{scanSummary}</span>
         </div>
       </div>

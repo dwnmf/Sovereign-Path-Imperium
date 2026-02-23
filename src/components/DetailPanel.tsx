@@ -1,4 +1,3 @@
-import { ArrowSquareOut, ArrowsCounterClockwise, PencilSimpleLine, Trash } from '@phosphor-icons/react'
 import { useEffect, useMemo, useState } from 'react'
 import type { LinkDetails } from '../types'
 
@@ -11,8 +10,6 @@ interface DetailPanelProps {
   onRetarget: (path: string, target: string) => Promise<void>
   onUndo: () => Promise<void>
 }
-
-const ICON_SIZE = 16
 
 function formatDate(value: string): string {
   if (!value) {
@@ -329,18 +326,17 @@ export function DetailPanel({
 
       <div className="detailActions">
         <button
-          className="button button--icon"
+          className="button"
           disabled={busy || actionBusy}
           onClick={() =>
             void runAsyncAction(() => onOpenTarget(details.target_real), 'Unable to open target')
           }
           type="button"
         >
-          <ArrowSquareOut size={ICON_SIZE} weight="duotone" />
           Open target
         </button>
         <button
-          className="button button--icon"
+          className="button"
           disabled={busy || actionBusy}
           onClick={() => {
             setRetargetValue(details.target_stored)
@@ -350,26 +346,23 @@ export function DetailPanel({
           }}
           type="button"
         >
-          <PencilSimpleLine size={ICON_SIZE} weight="duotone" />
           Retarget
         </button>
         <button
-          className="button button--danger button--icon"
+          className="button button--danger"
           disabled={busy || actionBusy}
           onClick={() => void runAsyncAction(() => onDelete(details.path), 'Delete failed')}
           type="button"
         >
-          <Trash size={ICON_SIZE} weight="duotone" />
           Delete
         </button>
         {canUndo ? (
           <button
-            className="button button--icon"
+            className="button"
             disabled={busy || actionBusy}
             onClick={() => void runAsyncAction(() => onUndo(), 'Undo failed')}
             type="button"
           >
-            <ArrowsCounterClockwise size={ICON_SIZE} weight="duotone" />
             Undo
           </button>
         ) : null}
